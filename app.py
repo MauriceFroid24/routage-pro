@@ -1,350 +1,365 @@
 import io
 import math
 import time
-from datetime import datetime, timedelta, time as dtime
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote_plus
+import urllib.parse
+from datetime import datetime, time as dtime
 
-import folium
 import pandas as pd
 import requests
 import streamlit as st
+import folium
 from streamlit_folium import st_folium
 
-st.set_page_config(page_title="Routage RDV depuis Excel", page_icon="🚗", layout="wide")
-
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-OSRM_ROUTE_URL = "https://router.project-osrm.org/route/v1/driving"
-USER_AGENT = "routage-rdv-excel/1.0"
-
-DEFAULT_COLUMNS = {
-    "adresse": "adresse_du_prospect",
-    "cp": "code_postal_du_prospect",
-    "ville": "ville_du_prospect",
-    "date": "date_rendez_vous",
-    "heure": "debut",
-    "nom": "nom_du_prospect",
-    "prenom": "prenom_du_prospect",
-    "tel": "telephone_du_prospect",
-    "email": "email_du_prospect",
-    "commercial_nom": "nom_du_commercial",
-    "commercial_prenom": "prenom_du_commercial",
-    "statut": "statut_prospect",
-}
+st.set_page_config(page_title="Routage PRO Excel V4", page_icon="🚗", layout="wide")
+OSM_HEADERS = {"User-Agent": "RoutageProFroid24/4.0 (contact: mauricefroid24@gmail.com)"}
 
 
-def normalize_colname(name: str) -> str:
-    return str(name).strip().lower().replace(" ", "_")
+def normalize_text(x):
+    return str(x).strip().lower().replace("é", "e").replace("è", "e").replace("ê", "e").replace("à", "a").replace("ç", "c")
 
 
-def find_column(df: pd.DataFrame, candidates: List[str], fallback: Optional[str] = None) -> Optional[str]:
-    normalized = {normalize_colname(c): c for c in df.columns}
-    for cand in candidates:
-        key = normalize_colname(cand)
-        if key in normalized:
-            return normalized[key]
-    return fallback
+def find_col(df, candidates):
+    for c in df.columns:
+        n = normalize_text(c)
+        for cand in candidates:
+            if cand in n:
+                return c
+    return None
 
 
-def clean_phone(value) -> str:
-    if pd.isna(value):
-        return ""
-    s = str(value).strip()
-    if s.endswith(".0"):
-        s = s[:-2]
-    if len(s) == 9 and not s.startswith("0"):
-        s = "0" + s
-    return s
-
-
-def parse_time(value) -> Optional[dtime]:
-    if pd.isna(value):
+def parse_time(value):
+    if value is None or pd.isna(value) or value == "":
         return None
-    if isinstance(value, dtime):
-        return value
+    if isinstance(value, pd.Timestamp):
+        return value.time()
     if isinstance(value, datetime):
         return value.time()
-    s = str(value).strip()
-    for fmt in ["%H:%M:%S", "%H:%M", "%Hh%M", "%Hh"]:
+    if isinstance(value, dtime):
+        return value
+    s = str(value).strip().lower().replace("h", ":")
+    for fmt in ["%H:%M:%S", "%H:%M", "%H"]:
         try:
             return datetime.strptime(s, fmt).time()
-        except ValueError:
+        except Exception:
             pass
     return None
 
 
-def parse_date(value) -> Optional[datetime]:
-    if pd.isna(value):
+def minutes_from_time(t):
+    if t is None:
         return None
-    if isinstance(value, datetime):
-        return value
-    s = str(value).strip()
-    for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"]:
-        try:
-            return datetime.strptime(s, fmt)
-        except ValueError:
-            pass
-    try:
-        return pd.to_datetime(value, dayfirst=True).to_pydatetime()
-    except Exception:
+    return t.hour * 60 + t.minute
+
+
+def format_minutes(minutes):
+    if minutes is None or pd.isna(minutes):
+        return ""
+    minutes = int(round(minutes)) % (24 * 60)
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def geocode_one(address):
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {"q": address, "format": "json", "limit": 1, "countrycodes": "fr", "addressdetails": 1}
+    r = requests.get(url, params=params, headers=OSM_HEADERS, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    if not data:
         return None
+    item = data[0]
+    return float(item["lat"]), float(item["lon"]), item.get("display_name", "")
 
 
-def build_full_address(row: pd.Series, col_addr: str, col_cp: Optional[str], col_city: Optional[str]) -> str:
-    parts = []
-    for col in [col_addr, col_cp, col_city]:
-        if col and col in row and not pd.isna(row[col]):
-            val = str(row[col]).strip()
-            if val and val.lower() != "nan":
-                if val.endswith(".0"):
-                    val = val[:-2]
-                parts.append(val)
-    return ", ".join(parts) + ", France"
+@st.cache_data(show_spinner=False, ttl=3600)
+def osrm_matrix(coords_tuple):
+    coords = list(coords_tuple)
+    coord_str = ";".join([f"{lon},{lat}" for lat, lon in coords])
+    url = f"https://router.project-osrm.org/table/v1/driving/{coord_str}"
+    params = {"annotations": "duration,distance"}
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    if "durations" not in data or "distances" not in data:
+        raise ValueError("Réponse OSRM invalide")
+    durations = [[0 if x is None else int(x / 60) for x in row] for row in data["durations"]]
+    distances = [[0 if x is None else round(x / 1000, 1) for x in row] for row in data["distances"]]
+    return durations, distances
 
 
-@st.cache_data(show_spinner=False)
-def geocode_address(address: str) -> Optional[Tuple[float, float, str]]:
-    params = {"q": address, "format": "json", "limit": 1, "countrycodes": "fr"}
-    try:
-        r = requests.get(NOMINATIM_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        if not data:
-            return None
-        item = data[0]
-        # Important: Nominatim = lat/lon. OSRM attend lon,lat.
-        return float(item["lat"]), float(item["lon"]), item.get("display_name", address)
-    except Exception:
-        return None
+def fallback_matrix(coords):
+    n = len(coords)
+    distances = [[0] * n for _ in range(n)]
+    durations = [[0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            km = haversine_km(coords[i][0], coords[i][1], coords[j][0], coords[j][1]) * 1.30
+            distances[i][j] = round(km, 1)
+            durations[i][j] = max(1, int(km / 55 * 60))
+    return durations, distances
 
 
-@st.cache_data(show_spinner=False)
-def osrm_route(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> Optional[Dict[str, float]]:
-    coords = f"{a_lon},{a_lat};{b_lon},{b_lat}"
-    params = {"overview": "false", "alternatives": "false", "steps": "false"}
-    try:
-        r = requests.get(f"{OSRM_ROUTE_URL}/{coords}", params=params, timeout=25)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("code") != "Ok" or not data.get("routes"):
-            return None
-        route = data["routes"][0]
-        return {"distance_km": route["distance"] / 1000, "duration_min": route["duration"] / 60}
-    except Exception:
-        return None
-
-
-def haversine_km(a_lat, a_lon, b_lat, b_lon) -> float:
-    r = 6371
-    phi1 = math.radians(a_lat)
-    phi2 = math.radians(b_lat)
-    dphi = math.radians(b_lat - a_lat)
-    dlambda = math.radians(b_lon - a_lon)
-    x = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 2 * r * math.atan2(math.sqrt(x), math.sqrt(1 - x))
-
-
-def nearest_neighbor_order(points: pd.DataFrame, start_lat: float, start_lon: float) -> List[int]:
-    remaining = set(points.index.tolist())
-    order = []
-    cur_lat, cur_lon = start_lat, start_lon
+def nearest_order(durations, start=0):
+    n = len(durations)
+    remaining = set(range(1, n))
+    order = [start]
+    current = start
     while remaining:
-        nxt = min(
-            remaining,
-            key=lambda idx: haversine_km(cur_lat, cur_lon, points.loc[idx, "latitude"], points.loc[idx, "longitude"]),
-        )
+        nxt = min(remaining, key=lambda j: durations[current][j])
         order.append(nxt)
         remaining.remove(nxt)
-        cur_lat, cur_lon = points.loc[nxt, "latitude"], points.loc[nxt, "longitude"]
+        current = nxt
     return order
 
 
-def compute_route(df: pd.DataFrame, start_address: str, start_time: dtime, mode: str, pause_minutes: int) -> Tuple[pd.DataFrame, Dict[str, float], folium.Map]:
-    start_geo = geocode_address(start_address)
-    if not start_geo:
-        raise ValueError("Adresse de départ introuvable. Essaie avec une adresse plus complète.")
-    start_lat, start_lon, start_label = start_geo
-
-    valid = df[df["geocoding_ok"]].copy()
-    invalid = df[~df["geocoding_ok"]].copy()
-
-    if valid.empty:
-        raise ValueError("Aucune adresse n'a pu être géocodée.")
-
-    if mode == "Optimiser la distance":
-        order_idx = nearest_neighbor_order(valid, start_lat, start_lon)
-        valid = valid.loc[order_idx].copy()
-    else:
-        valid = valid.sort_values(["date_rdv", "heure_rdv"], na_position="last").copy()
-
-    current_dt = datetime.combine(valid["date_rdv"].dropna().min().date() if valid["date_rdv"].notna().any() else datetime.today().date(), start_time)
-    prev_lat, prev_lon = start_lat, start_lon
-    rows = []
-    total_km = 0.0
-    total_min = 0.0
-
-    for i, (_, row) in enumerate(valid.iterrows(), start=1):
-        route = osrm_route(prev_lat, prev_lon, row["latitude"], row["longitude"])
-        if route is None:
-            km = haversine_km(prev_lat, prev_lon, row["latitude"], row["longitude"]) * 1.30
-            minutes = km / 55 * 60
-            source = "Estimation à vol d'oiseau x1,30"
-        else:
-            km = route["distance_km"]
-            minutes = route["duration_min"]
-            source = "OSRM"
-        current_dt = current_dt + timedelta(minutes=minutes)
-        rdv_dt = None
-        if pd.notna(row.get("date_rdv")) and row.get("heure_rdv"):
-            rdv_dt = datetime.combine(row["date_rdv"].date(), row["heure_rdv"])
-        retard_min = None
-        avance_min = None
-        if rdv_dt:
-            diff = (current_dt - rdv_dt).total_seconds() / 60
-            retard_min = max(0, round(diff))
-            avance_min = max(0, round(-diff))
-        enriched = row.to_dict()
-        enriched.update({
-            "ordre_tournee": i,
-            "depart_depuis": "Départ" if i == 1 else "RDV précédent",
-            "distance_depuis_precedent_km": round(km, 1),
-            "temps_depuis_precedent_min": round(minutes),
-            "heure_arrivee_estimee": current_dt.strftime("%H:%M"),
-            "retard_estime_min": retard_min,
-            "avance_estimee_min": avance_min,
-            "source_calcul": source,
-            "lien_google_maps": "https://www.google.com/maps/search/?api=1&query=" + quote_plus(row["adresse_complete"]),
-        })
-        rows.append(enriched)
-        total_km += km
-        total_min += minutes
-        current_dt = current_dt + timedelta(minutes=pause_minutes)
-        prev_lat, prev_lon = row["latitude"], row["longitude"]
-
-    result = pd.DataFrame(rows)
-    if not invalid.empty:
-        invalid = invalid.copy()
-        invalid["ordre_tournee"] = "Non calculé"
-        invalid["source_calcul"] = "Adresse non trouvée"
-        result = pd.concat([result, invalid], ignore_index=True, sort=False)
-
-    m = folium.Map(location=[start_lat, start_lon], zoom_start=8)
-    folium.Marker([start_lat, start_lon], tooltip="Départ", popup=start_label, icon=folium.Icon(color="green")).add_to(m)
-    line = [[start_lat, start_lon]]
-    for _, row in result[result["geocoding_ok"]].sort_values("ordre_tournee").iterrows():
-        folium.Marker(
-            [row["latitude"], row["longitude"]],
-            tooltip=f"#{row['ordre_tournee']} - {row.get('prenom_du_prospect', '')} {row.get('nom_du_prospect', '')}",
-            popup=f"{row['adresse_complete']}<br>Arrivée estimée : {row.get('heure_arrivee_estimee', '')}",
-        ).add_to(m)
-        line.append([row["latitude"], row["longitude"]])
-    folium.PolyLine(line, weight=4, opacity=0.8).add_to(m)
-
-    summary = {"total_km": round(total_km, 1), "total_trajet_min": round(total_min), "nb_rdv": int(valid.shape[0]), "adresses_non_trouvees": int(invalid.shape[0])}
-    return result, summary, m
+def google_maps_link(addresses):
+    clean = [a for a in addresses if a]
+    if len(clean) < 2:
+        return ""
+    # Google limite les waypoints, donc on garde les 10 premières étapes pour éviter un lien cassé.
+    clean = clean[:10]
+    origin = urllib.parse.quote_plus(clean[0])
+    destination = urllib.parse.quote_plus(clean[-1])
+    waypoints = "|".join(urllib.parse.quote_plus(a) for a in clean[1:-1])
+    url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}&travelmode=driving"
+    if waypoints:
+        url += f"&waypoints={waypoints}"
+    return url
 
 
-def to_excel_bytes(df: pd.DataFrame, summary: Dict[str, float]) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_df = pd.DataFrame([
-            ["Nombre de RDV calculés", summary["nb_rdv"]],
-            ["Distance totale estimée km", summary["total_km"]],
-            ["Temps total de trajet min", summary["total_trajet_min"]],
-            ["Adresses non trouvées", summary["adresses_non_trouvees"]],
-        ], columns=["Indicateur", "Valeur"])
-        summary_df.to_excel(writer, sheet_name="Résumé", index=False)
-        df.to_excel(writer, sheet_name="Tournée", index=False)
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for col in sheet.columns:
-                max_len = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col[:100])
-                sheet.column_dimensions[col[0].column_letter].width = min(max(max_len + 2, 12), 45)
-    return output.getvalue()
-
-
-st.title("🚗 Appli de routage depuis un fichier Excel")
-st.caption("Importe tes RDV, calcule une tournée, affiche distance/temps/heure estimée et exporte un Excel enrichi.")
+st.title("🚗 Appli de routage depuis un fichier Excel — V4 corrigée")
+st.caption("Cette version affiche les erreurs au lieu de mouliner dans le vide, et bascule en calcul de secours si le service d’itinéraire ne répond pas.")
 
 with st.sidebar:
     st.header("Paramètres")
-    start_address = st.text_input("Adresse de départ", value="Maisons-Alfort, France")
-    start_time_input = st.time_input("Heure de départ", value=dtime(8, 0))
-    pause_minutes = st.number_input("Temps sur place par RDV, en minutes", min_value=0, max_value=240, value=45, step=5)
-    mode = st.radio("Mode de tournée", ["Respecter les heures de RDV", "Optimiser la distance"])
-    st.info("Astuce : pour une vraie tournée commerciale, commence par respecter les heures de RDV. Pour une prospection sans horaire fixe, optimise la distance.")
+    start_address = st.text_input("Adresse de départ", "Maisons-Alfort, France")
+    start_time_input = st.time_input("Heure de départ", value=dtime(7, 0))
+    visit_duration = st.number_input("Temps sur place par RDV, en minutes", min_value=0, max_value=240, value=90, step=5)
+    mode = st.radio("Mode de tournée", ["Respecter les heures de RDV", "Optimiser la distance"], index=0)
+    return_to_start = st.checkbox("Retour au point de départ", value=False)
 
 uploaded = st.file_uploader("Charge ton fichier Excel", type=["xlsx", "xls"])
 
 if uploaded:
     df = pd.read_excel(uploaded)
-    df.columns = [str(c).strip() for c in df.columns]
-
-    col_addr = find_column(df, [DEFAULT_COLUMNS["adresse"], "adresse", "address"])
-    col_cp = find_column(df, [DEFAULT_COLUMNS["cp"], "code_postal", "cp", "postcode"])
-    col_city = find_column(df, [DEFAULT_COLUMNS["ville"], "ville", "city"])
-    col_date = find_column(df, [DEFAULT_COLUMNS["date"], "date", "date_rdv"])
-    col_time = find_column(df, [DEFAULT_COLUMNS["heure"], "heure", "heure_rdv", "debut", "début"])
-
-    if not col_addr:
-        st.error("Je ne trouve pas de colonne adresse. Renomme une colonne en `adresse_du_prospect` ou sélectionne un fichier compatible.")
-        st.stop()
-
     st.subheader("Aperçu du fichier")
     st.dataframe(df.head(20), use_container_width=True)
 
+    adresse_col = find_col(df, ["adresse", "address", "rue"])
+    cp_col = find_col(df, ["code postal", "postcode", "post_code", "cp"])
+    ville_col = find_col(df, ["ville", "city", "commune"])
+    heure_col = find_col(df, ["heure", "horaire", "creneau", "date", "rdv"])
+    prospect_col = find_col(df, ["prospect", "client", "nom", "full name", "prenom"])
+    phone_col = find_col(df, ["phone", "tel", "telephone"])
+    commercial_col = find_col(df, ["commercial", "vendeur", "closer"])
+
+    with st.expander("Vérifier / modifier les colonnes détectées", expanded=False):
+        cols = [None] + list(df.columns)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            adresse_col = st.selectbox("Adresse", cols, index=cols.index(adresse_col) if adresse_col in cols else 0)
+            cp_col = st.selectbox("Code postal", cols, index=cols.index(cp_col) if cp_col in cols else 0)
+        with c2:
+            ville_col = st.selectbox("Ville", cols, index=cols.index(ville_col) if ville_col in cols else 0)
+            heure_col = st.selectbox("Heure/date RDV", cols, index=cols.index(heure_col) if heure_col in cols else 0)
+        with c3:
+            prospect_col = st.selectbox("Nom / prospect", cols, index=cols.index(prospect_col) if prospect_col in cols else 0)
+            phone_col = st.selectbox("Téléphone", cols, index=cols.index(phone_col) if phone_col in cols else 0)
+
     if st.button("Calculer la tournée", type="primary"):
-        work = df.copy()
-        work["adresse_complete"] = work.apply(lambda r: build_full_address(r, col_addr, col_cp, col_city), axis=1)
-        work["date_rdv"] = work[col_date].apply(parse_date) if col_date else pd.NaT
-        work["heure_rdv"] = work[col_time].apply(parse_time) if col_time else None
-        if "telephone_du_prospect" in work.columns:
-            work["telephone_du_prospect"] = work["telephone_du_prospect"].apply(clean_phone)
+        try:
+            if not adresse_col:
+                st.error("Sélectionne au minimum la colonne Adresse.")
+                st.stop()
 
-        progress = st.progress(0, text="Géocodage des adresses...")
-        lats, lons, labels, oks = [], [], [], []
-        for i, address in enumerate(work["adresse_complete"].tolist()):
-            geo = geocode_address(address)
-            if geo:
-                lat, lon, label = geo
-                lats.append(lat); lons.append(lon); labels.append(label); oks.append(True)
+            work = df.copy().reset_index(drop=True)
+
+            def full_address(row):
+                parts = []
+                for col in [adresse_col, cp_col, ville_col]:
+                    if col and col in row and pd.notna(row[col]):
+                        p = str(row[col]).strip()
+                        if p and p.lower() != "nan":
+                            parts.append(p)
+                return ", ".join(parts)
+
+            work["Adresse complete"] = work.apply(full_address, axis=1)
+            work = work[work["Adresse complete"].astype(str).str.len() > 3].copy().reset_index(drop=True)
+            if work.empty:
+                st.error("Aucune adresse exploitable trouvée dans le fichier.")
+                st.stop()
+
+            progress = st.progress(0)
+            status = st.empty()
+            points = []
+            all_addresses = [start_address] + work["Adresse complete"].tolist()
+
+            for i, addr in enumerate(all_addresses):
+                status.info(f"Géocodage {i + 1}/{len(all_addresses)} : {addr}")
+                geo = geocode_one(addr)
+                if geo is None:
+                    points.append({"address": addr, "lat": None, "lon": None})
+                else:
+                    lat, lon, display = geo
+                    points.append({"address": addr, "lat": lat, "lon": lon, "display": display})
+                progress.progress((i + 1) / len(all_addresses))
+                time.sleep(0.05)
+
+            geocoded = pd.DataFrame(points)
+            bad = geocoded[geocoded["lat"].isna()]
+            if len(bad) > 0:
+                st.error("Certaines adresses n’ont pas été trouvées. Corrige-les puis relance.")
+                st.dataframe(bad[["address"]], use_container_width=True)
+                st.stop()
+
+            coords = tuple(zip(geocoded["lat"], geocoded["lon"]))
+            status.info("Calcul des temps et distances...")
+            try:
+                durations, distances = osrm_matrix(coords)
+                calcul_source = "Routes OSRM"
+            except Exception as e:
+                durations, distances = fallback_matrix(coords)
+                calcul_source = "Calcul de secours sans trafic"
+                st.warning(f"Le service de routage OSRM n’a pas répondu. J’utilise un calcul de secours. Détail : {e}")
+
+            if mode == "Respecter les heures de RDV" and heure_col:
+                rdv_infos = []
+                for i, row in work.iterrows():
+                    t = parse_time(row[heure_col])
+                    rdv_infos.append((i + 1, minutes_from_time(t) if t else 99999))
+                order = [0] + [idx for idx, _ in sorted(rdv_infos, key=lambda x: x[1])]
             else:
-                lats.append(None); lons.append(None); labels.append(""); oks.append(False)
-            progress.progress((i + 1) / max(len(work), 1), text=f"Géocodage {i + 1}/{len(work)}")
-            time.sleep(1.0)  # Respect du service gratuit Nominatim.
-        work["latitude"] = lats
-        work["longitude"] = lons
-        work["adresse_trouvee"] = labels
-        work["geocoding_ok"] = oks
+                order = nearest_order(durations, 0)
 
-        with st.spinner("Calcul des distances et temps de trajet..."):
-            result, summary, fmap = compute_route(work, start_address, start_time_input, mode, int(pause_minutes))
+            if return_to_start:
+                order.append(0)
 
-        st.success("Tournée calculée")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("RDV calculés", summary["nb_rdv"])
-        c2.metric("Distance totale", f"{summary['total_km']} km")
-        c3.metric("Temps de trajet", f"{summary['total_trajet_min']} min")
-        c4.metric("Adresses non trouvées", summary["adresses_non_trouvees"])
+            current_min = minutes_from_time(start_time_input)
+            total_drive = 0
+            total_km = 0.0
+            prev = None
+            rows = []
 
-        preferred_cols = [
-            "ordre_tournee", "date_rdv", "heure_rdv", "heure_arrivee_estimee", "retard_estime_min", "avance_estimee_min",
-            "prenom_du_prospect", "nom_du_prospect", "telephone_du_prospect", "adresse_complete",
-            "distance_depuis_precedent_km", "temps_depuis_precedent_min", "source_calcul", "lien_google_maps"
-        ]
-        cols = [c for c in preferred_cols if c in result.columns] + [c for c in result.columns if c not in preferred_cols]
-        st.subheader("Résultat")
-        st.dataframe(result[cols], use_container_width=True)
+            for step, idx in enumerate(order):
+                if prev is None:
+                    drive_min, dist_km = 0, 0.0
+                else:
+                    drive_min, dist_km = durations[prev][idx], distances[prev][idx]
+                    current_min += drive_min
+                    total_drive += drive_min
+                    total_km += dist_km
 
-        st.subheader("Carte")
-        st_folium(fmap, width=None, height=520)
+                rdv_min = None
+                wait = 0
+                if idx == 0:
+                    nom, tel, address, type_row = "Base", "", start_address, "Départ/Retour"
+                    rdv_file = ""
+                    duration_place = 0
+                else:
+                    row = work.iloc[idx - 1]
+                    nom = str(row[prospect_col]) if prospect_col and pd.notna(row[prospect_col]) else ""
+                    tel = str(row[phone_col]) if phone_col and pd.notna(row[phone_col]) else ""
+                    address = row["Adresse complete"]
+                    type_row = "RDV"
+                    duration_place = int(visit_duration)
+                    t = parse_time(row[heure_col]) if heure_col else None
+                    rdv_min = minutes_from_time(t)
+                    rdv_file = format_minutes(rdv_min) if rdv_min is not None else ""
+                    if mode == "Respecter les heures de RDV" and rdv_min is not None and current_min < rdv_min:
+                        wait = rdv_min - current_min
+                        current_min = rdv_min
 
-        excel_bytes = to_excel_bytes(result[cols], summary)
-        st.download_button(
-            "Télécharger l'Excel de tournée",
-            data=excel_bytes,
-            file_name="tournee_rdv_calculee.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+                retard = ""
+                if rdv_min is not None:
+                    diff = current_min - rdv_min
+                    retard = "+{} min".format(diff) if diff > 0 else ("{} min".format(diff) if diff < 0 else "à l'heure")
+
+                rows.append({
+                    "Ordre": step,
+                    "Type": type_row,
+                    "Nom": nom,
+                    "Téléphone": tel,
+                    "Adresse complete": address,
+                    "Trajet depuis étape précédente (min)": drive_min,
+                    "Distance depuis étape précédente (km)": dist_km,
+                    "Attente avant RDV (min)": wait,
+                    "Heure arrivée estimée": format_minutes(current_min),
+                    "Heure RDV fichier": rdv_file,
+                    "Avance / retard": retard,
+                    "Temps sur place prévu (min)": duration_place,
+                    "Latitude": geocoded.iloc[idx]["lat"],
+                    "Longitude": geocoded.iloc[idx]["lon"],
+                })
+
+                if idx != 0:
+                    current_min += int(visit_duration)
+                prev = idx
+
+            result = pd.DataFrame(rows)
+            status.success("Tournée calculée.")
+
+            st.success(f"Tournée calculée avec succès — source : {calcul_source}")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("RDV", len(work))
+            c2.metric("Distance", f"{round(total_km, 1)} km")
+            c3.metric("Conduite", f"{int(total_drive//60)}h{int(total_drive%60):02d}")
+            c4.metric("Fin estimée", format_minutes(current_min))
+
+            st.subheader("Résultat")
+            st.dataframe(result, use_container_width=True)
+
+            gmaps = google_maps_link(result["Adresse complete"].tolist())
+            if gmaps:
+                st.link_button("Ouvrir dans Google Maps", gmaps)
+
+            st.subheader("Carte")
+            center_lat = float(result["Latitude"].mean())
+            center_lon = float(result["Longitude"].mean())
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=9)
+            route_coords = []
+            for _, r in result.iterrows():
+                route_coords.append([r["Latitude"], r["Longitude"]])
+                folium.Marker(
+                    [r["Latitude"], r["Longitude"]],
+                    tooltip=f"{r['Ordre']} - {r['Type']}",
+                    popup=f"{r['Ordre']} - {r['Nom']}<br>{r['Adresse complete']}<br>Arrivée : {r['Heure arrivée estimée']}",
+                ).add_to(m)
+            folium.PolyLine(route_coords, weight=4, opacity=0.8).add_to(m)
+            st_folium(m, width=None, height=520)
+
+            st.subheader("Export")
+            summary = {
+                "Nombre de RDV": len(work),
+                "Distance totale estimée": f"{round(total_km, 1)} km",
+                "Temps de conduite estimé": f"{int(total_drive//60)}h{int(total_drive%60):02d}",
+                "Heure fin estimée": format_minutes(current_min),
+                "Source calcul": calcul_source,
+                "Lien Google Maps": gmaps,
+            }
+            export = io.BytesIO()
+            with pd.ExcelWriter(export, engine="xlsxwriter") as writer:
+                result.to_excel(writer, sheet_name="Tournee optimisee", index=False)
+                pd.DataFrame(summary.items(), columns=["Indicateur", "Valeur"]).to_excel(writer, sheet_name="Resume", index=False)
+                for _, ws in writer.sheets.items():
+                    ws.freeze_panes(1, 0)
+                    ws.set_column(0, 0, 10)
+                    ws.set_column(1, 5, 24)
+                    ws.set_column(6, 20, 20)
+            export.seek(0)
+            st.download_button("Télécharger l’Excel optimisé", data=export, file_name="tournee_optimisee.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        except Exception as e:
+            st.error("Erreur pendant le calcul. Voici le détail technique pour correction :")
+            st.exception(e)
 else:
-    st.info("Charge ton fichier Excel pour commencer. Le fichier fourni dans ce dossier `exemple_rdv.xlsx` est déjà compatible.")
+    st.info("Dépose ton Excel pour commencer.")
