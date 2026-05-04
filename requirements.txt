@@ -1,7 +1,5 @@
 streamlit
 pandas
 openpyxl
-xlsxwriter
 requests
 folium
-streamlit-folium

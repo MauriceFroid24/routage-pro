@@ -8,9 +8,9 @@ import pandas as pd
 import requests
 import streamlit as st
 import folium
-from streamlit_folium import st_folium
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Routage PRO Excel V4", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO Excel V5", page_icon="🚗", layout="wide")
 OSM_HEADERS = {"User-Agent": "RoutageProFroid24/4.0 (contact: mauricefroid24@gmail.com)"}
 
 
@@ -137,8 +137,8 @@ def google_maps_link(addresses):
     return url
 
 
-st.title("🚗 Appli de routage depuis un fichier Excel — V4 corrigée")
-st.caption("Cette version affiche les erreurs au lieu de mouliner dans le vide, et bascule en calcul de secours si le service d’itinéraire ne répond pas.")
+st.title("🚗 Appli de routage depuis un fichier Excel — V5 stable")
+st.caption("Version stable : les résultats restent affichés après calcul, même si la carte recharge la page.")
 
 with st.sidebar:
     st.header("Paramètres")
@@ -306,23 +306,54 @@ if uploaded:
                 prev = idx
 
             result = pd.DataFrame(rows)
-            status.success("Tournée calculée.")
-
-            st.success(f"Tournée calculée avec succès — source : {calcul_source}")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("RDV", len(work))
-            c2.metric("Distance", f"{round(total_km, 1)} km")
-            c3.metric("Conduite", f"{int(total_drive//60)}h{int(total_drive%60):02d}")
-            c4.metric("Fin estimée", format_minutes(current_min))
-
-            st.subheader("Résultat")
-            st.dataframe(result, use_container_width=True)
-
             gmaps = google_maps_link(result["Adresse complete"].tolist())
-            if gmaps:
-                st.link_button("Ouvrir dans Google Maps", gmaps)
+            summary = {
+                "Nombre de RDV": len(work),
+                "Distance totale estimée": f"{round(total_km, 1)} km",
+                "Temps de conduite estimé": f"{int(total_drive//60)}h{int(total_drive%60):02d}",
+                "Heure fin estimée": format_minutes(current_min),
+                "Source calcul": calcul_source,
+                "Lien Google Maps": gmaps,
+            }
+            st.session_state["last_result"] = result
+            st.session_state["last_summary"] = summary
+            st.session_state["last_calcul_source"] = calcul_source
+            st.session_state["last_total_km"] = total_km
+            st.session_state["last_total_drive"] = total_drive
+            st.session_state["last_end_min"] = current_min
+            st.session_state["last_gmaps"] = gmaps
+            status.success("Tournée calculée. Les résultats sont affichés plus bas.")
 
-            st.subheader("Carte")
+        except Exception as e:
+            st.error("Erreur pendant le calcul. Voici le détail technique pour correction :")
+            st.exception(e)
+    if "last_result" in st.session_state:
+        result = st.session_state["last_result"]
+        summary = st.session_state.get("last_summary", {})
+        st.divider()
+        st.success(f"Tournée calculée avec succès — source : {st.session_state.get('last_calcul_source', '')}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("RDV", max(0, len(result) - 1))
+        c2.metric("Distance", f"{round(st.session_state.get('last_total_km', 0), 1)} km")
+        total_drive = st.session_state.get("last_total_drive", 0)
+        c3.metric("Conduite", f"{int(total_drive//60)}h{int(total_drive%60):02d}")
+        c4.metric("Fin estimée", format_minutes(st.session_state.get("last_end_min", 0)))
+
+        st.subheader("Résultat de la tournée")
+        display_cols = [
+            "Ordre", "Type", "Nom", "Téléphone", "Adresse complete",
+            "Trajet depuis étape précédente (min)", "Distance depuis étape précédente (km)",
+            "Heure arrivée estimée", "Heure RDV fichier", "Avance / retard",
+            "Attente avant RDV (min)", "Temps sur place prévu (min)"
+        ]
+        st.dataframe(result[[c for c in display_cols if c in result.columns]], use_container_width=True, height=420)
+
+        gmaps = st.session_state.get("last_gmaps", "")
+        if gmaps:
+            st.link_button("Ouvrir la tournée dans Google Maps", gmaps, type="primary")
+
+        st.subheader("Carte")
+        try:
             center_lat = float(result["Latitude"].mean())
             center_lon = float(result["Longitude"].mean())
             m = folium.Map(location=[center_lat, center_lon], zoom_start=9)
@@ -335,31 +366,22 @@ if uploaded:
                     popup=f"{r['Ordre']} - {r['Nom']}<br>{r['Adresse complete']}<br>Arrivée : {r['Heure arrivée estimée']}",
                 ).add_to(m)
             folium.PolyLine(route_coords, weight=4, opacity=0.8).add_to(m)
-            st_folium(m, width=None, height=520)
-
-            st.subheader("Export")
-            summary = {
-                "Nombre de RDV": len(work),
-                "Distance totale estimée": f"{round(total_km, 1)} km",
-                "Temps de conduite estimé": f"{int(total_drive//60)}h{int(total_drive%60):02d}",
-                "Heure fin estimée": format_minutes(current_min),
-                "Source calcul": calcul_source,
-                "Lien Google Maps": gmaps,
-            }
-            export = io.BytesIO()
-            with pd.ExcelWriter(export, engine="xlsxwriter") as writer:
-                result.to_excel(writer, sheet_name="Tournee optimisee", index=False)
-                pd.DataFrame(summary.items(), columns=["Indicateur", "Valeur"]).to_excel(writer, sheet_name="Resume", index=False)
-                for _, ws in writer.sheets.items():
-                    ws.freeze_panes(1, 0)
-                    ws.set_column(0, 0, 10)
-                    ws.set_column(1, 5, 24)
-                    ws.set_column(6, 20, 20)
-            export.seek(0)
-            st.download_button("Télécharger l’Excel optimisé", data=export, file_name="tournee_optimisee.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
+            components.html(m._repr_html_(), height=560, scrolling=True)
         except Exception as e:
-            st.error("Erreur pendant le calcul. Voici le détail technique pour correction :")
-            st.exception(e)
+            st.warning(f"Carte non affichée, mais la tournée est bien calculée. Détail : {e}")
+
+        st.subheader("Export")
+        export = io.BytesIO()
+        with pd.ExcelWriter(export, engine="openpyxl") as writer:
+            result.to_excel(writer, sheet_name="Tournee optimisee", index=False)
+            pd.DataFrame(summary.items(), columns=["Indicateur", "Valeur"]).to_excel(writer, sheet_name="Resume", index=False)
+        export.seek(0)
+        st.download_button(
+            "Télécharger l’Excel optimisé",
+            data=export,
+            file_name="tournee_optimisee.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
 else:
     st.info("Dépose ton Excel pour commencer.")
