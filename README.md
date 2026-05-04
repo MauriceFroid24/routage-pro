@@ -1,3 +1,13 @@
-# Application de routage Excel - V5 stable
+# Routage Pro V7 Terrain
 
-Correction V5 : les résultats sont sauvegardés dans la session et restent affichés après le calcul. La carte n'utilise plus streamlit-folium pour éviter les rechargements qui effacent l'affichage.
+Application Streamlit pour importer un fichier Excel de RDV, géocoder les adresses, calculer une tournée optimisée, afficher les distances/temps entre chaque étape, générer une carte avec noms prospects, et exporter le planning.
+
+## Fichiers
+- app.py
+- requirements.txt
+- README.md
+
+## Déploiement Streamlit Cloud
+1. Envoyer ces fichiers dans le dépôt GitHub `routage-pro`.
+2. Streamlit Cloud se met à jour automatiquement.
+3. Recharger l'application.

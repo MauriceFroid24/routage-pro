@@ -1,5 +1,8 @@
 streamlit
 pandas
 openpyxl
-requests
+geopy
 folium
+streamlit-folium
+requests
+xlsxwriter
