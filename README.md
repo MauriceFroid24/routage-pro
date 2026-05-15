@@ -1,13 +1,8 @@
-# Routage Pro V7 Terrain
+# Routage Pro V8 Terrain
 
-Application Streamlit pour importer un fichier Excel de RDV, géocoder les adresses, calculer une tournée optimisée, afficher les distances/temps entre chaque étape, générer une carte avec noms prospects, et exporter le planning.
+Version terrain sans optimisation : l'ordre est imposé par l'heure de RDV.
 
-## Fichiers
-- app.py
-- requirements.txt
-- README.md
+Colonnes attendues dans l'Excel :
+A numéro RDV, B adresse, C code postal, D date RDV, E heure début, Q téléphone, R ville, J/N nom/prénom prospect.
 
-## Déploiement Streamlit Cloud
-1. Envoyer ces fichiers dans le dépôt GitHub `routage-pro`.
-2. Streamlit Cloud se met à jour automatiquement.
-3. Recharger l'application.
+Départ par défaut : 72 avenue des Tourelles, 94490 Ormesson-sur-Marne.
