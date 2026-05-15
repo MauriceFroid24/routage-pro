@@ -19,7 +19,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V9", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V10", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -30,7 +30,7 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V9 — terrain iPhone / Surface")
+st.title("🚗 Routage PRO V10 — terrain iPhone / Surface")
 st.caption("Ordre par heure de RDV · retour base · pauses · départ conseillé · PDF enrichi · Waze / Maps / appel")
 
 
@@ -122,9 +122,9 @@ def maps_link(address):
 
 
 def streetview_link(lat, lon, address):
-    if lat and lon:
-        return f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
-    return maps_link(address)
+    # Lien volontairement simple et fiable sur iPhone/Windows : ouvre Google Maps sur l’adresse.
+    # Les liens Street View directs sont instables et peuvent donner un écran noir selon Safari/Chrome.
+    return f"https://www.google.com/maps/search/{quote_plus(address)}"
 
 
 def directions_link(origin, destination):
@@ -161,7 +161,7 @@ def fmt_duration(m):
 
 @st.cache_data(show_spinner=False)
 def geocode_addresses(addresses):
-    geolocator = Nominatim(user_agent="routage_pro_v9_froid24")
+    geolocator = Nominatim(user_agent="routage_pro_v10_froid24")
     geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=1, swallow_exceptions=True)
     out = {}
     for address in addresses:
@@ -174,13 +174,18 @@ def geocode_addresses(addresses):
 def osrm_route(origin_lat, origin_lon, dest_lat, dest_lon):
     if not all([origin_lat, origin_lon, dest_lat, dest_lon]):
         return None
-    url = f"https://router.project-osrm.org/route/v1/driving/{origin_lon},{origin_lat};{dest_lon},{dest_lat}?overview=false"
+    url = f"https://router.project-osrm.org/route/v1/driving/{origin_lon},{origin_lat};{dest_lon},{dest_lat}?overview=full&geometries=geojson"
     try:
         r = requests.get(url, timeout=8)
         data = r.json()
         if data.get("code") == "Ok" and data.get("routes"):
             route = data["routes"][0]
-            return {"km": route["distance"] / 1000, "min": route["duration"] / 60, "source": "OSRM"}
+            coords = []
+            try:
+                coords = [[lat, lon] for lon, lat in route.get("geometry", {}).get("coordinates", [])]
+            except Exception:
+                coords = []
+            return {"km": route["distance"] / 1000, "min": route["duration"] / 60, "source": "OSRM", "geometry": coords}
     except Exception:
         return None
     return None
@@ -271,8 +276,8 @@ def route_between(prev_addr, prev_geo, addr, coord, arrival_dt, api_key, use_goo
     if prev_geo.get("lat") and prev_geo.get("lon") and coord.get("lat") and coord.get("lon"):
         dist = geodesic((prev_geo["lat"], prev_geo["lon"]), (coord["lat"], coord["lon"])).km * 1.28
         mins = (dist / AVG_SPEED_KMH) * 60
-        return {"km": dist, "min": mins, "source": "Estimation"}
-    return {"km": None, "min": None, "source": "Non calculé"}
+        return {"km": dist, "min": mins, "source": "Estimation", "geometry": []}
+    return {"km": None, "min": None, "source": "Non calculé", "geometry": []}
 
 
 def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
@@ -328,6 +333,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
             "google_maps": maps_link(addr),
             "street_view": streetview_link(coord.get("lat"), coord.get("lon"), addr),
             "itineraire_depuis_precedent": directions_link(prev_addr, addr),
+            "route_geometry": rb.get("geometry", []),
         })
         out.append(r)
         prev_addr = addr
@@ -359,6 +365,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
             "waze": waze_link(geo.get(start_address, {}).get("lat"), geo.get(start_address, {}).get("lon"), start_address),
             "google_maps": maps_link(start_address), "street_view": maps_link(start_address),
             "itineraire_depuis_precedent": directions_link(last_addr, start_address),
+            "route_geometry": rb.get("geometry", []),
         }
     return route_df, return_row, geo.get(start_address, {})
 
@@ -383,17 +390,29 @@ def make_map(df, return_row, start_address, start_geo):
         if not r.get("lat") or not r.get("lon"):
             continue
         time_label = fmt_time(r.get("heure_rdv"))
-        label = f"{r.get('numero_rdv','')} - {r.get('nom_prospect','')} - {time_label} - {r.get('telephone','')}"
+        label = f"{r.get('numero_rdv','')} - {r.get('nom_prospect','')} - {time_label}"
         html = f"""
-        <div style='font-size:16px;line-height:18px;font-weight:800;background:#fff200;color:#000;border:2px solid #111;border-radius:8px;padding:5px 7px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);'>
-        #{r.get('numero_rdv','')} · {r.get('nom_prospect','')}<br>🕒 {time_label} &nbsp; 📞 {r.get('telephone','')}
+        <div style='font-size:20px;line-height:23px;font-weight:900;background:#ffea00;color:#111;border:3px solid #000;border-radius:10px;padding:7px 10px;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.55);'>
+        #{r.get('numero_rdv','')} · {r.get('nom_prospect','')}<br>🕒 {time_label}
         </div>"""
         folium.Marker([r["lat"], r["lon"]], tooltip=label, popup=folium.Popup(label, max_width=380), icon=folium.Icon(color="blue", icon="user")).add_to(m)
         folium.map.Marker([r["lat"], r["lon"]], icon=folium.DivIcon(html=html)).add_to(m)
         points.append([r["lat"], r["lon"]])
     if return_row and return_row.get("lat") and return_row.get("lon"):
         points.append([return_row["lat"], return_row["lon"]])
-    if len(points) >= 2:
+    # Tracé des routes réelles quand OSRM a fourni la géométrie, sinon ligne droite de secours
+    route_drawn = False
+    for _, r in df.iterrows():
+        geom = r.get("route_geometry", [])
+        if isinstance(geom, list) and len(geom) >= 2:
+            folium.PolyLine(geom, weight=5, opacity=0.9, color="red").add_to(m)
+            route_drawn = True
+    if return_row:
+        geom = return_row.get("route_geometry", [])
+        if isinstance(geom, list) and len(geom) >= 2:
+            folium.PolyLine(geom, weight=5, opacity=0.9, color="red", dash_array="8,6").add_to(m)
+            route_drawn = True
+    if not route_drawn and len(points) >= 2:
         folium.PolyLine(points, weight=4, opacity=0.8, color="red").add_to(m)
     return m
 
@@ -411,7 +430,7 @@ def streetview_static_image(lat, lon, api_key):
     return None
 
 
-def create_pdf(df, return_row, start_address, include_photos, google_key):
+def create_pdf(df, return_row, start_address, include_photos, google_key, visit_min=150):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=0.7*cm, leftMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
     styles = getSampleStyleSheet()
@@ -424,10 +443,19 @@ def create_pdf(df, return_row, start_address, include_photos, google_key):
     total_km = pd.to_numeric(df["distance_depuis_precedent_km"], errors="coerce").fillna(0).sum() + (return_row.get("distance_depuis_precedent_km", 0) if return_row else 0)
     total_min = pd.to_numeric(df["temps_route_depuis_precedent_min"], errors="coerce").fillna(0).sum() + (return_row.get("temps_route_depuis_precedent_min", 0) if return_row and isinstance(return_row.get("temps_route_depuis_precedent_min"), int) else 0)
 
-    story.append(Paragraph("Tournée terrain — Routage PRO V9", title))
+    story.append(Paragraph("Tournée terrain — Routage PRO V10", title))
     story.append(Paragraph(f"Départ / retour : {start_address}", normal))
     story.append(Paragraph(f"RDV : {len(df)} · Distance totale retour inclus : {total_km:.1f} km · Temps route : {fmt_duration(total_min)}", normal))
     story.append(Spacer(1, 0.2*cm))
+
+    story.append(Paragraph("Fil conducteur terrain", h2))
+    tdata = [["Étape", "Heure", "Détail"]]
+    for item in build_timeline(df, return_row, start_address, visit_min):
+        tdata.append([Paragraph(item.get("Étape", ""), small), Paragraph(item.get("Heure conseillée", ""), small), Paragraph(item.get("Détail", ""), small)])
+    tt = Table(tdata, colWidths=[2.2*cm, 2.0*cm, 14.0*cm], repeatRows=1)
+    tt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1f2937')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.25,colors.grey),('VALIGN',(0,0),(-1,-1),'TOP'),('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,colors.HexColor('#f3f4f6')])]))
+    story.append(tt)
+    story.append(Spacer(1, 0.25*cm))
 
     data = [["#", "RDV", "Client", "Adresse", "Trajet", "Départ conseillé", "Pause", "Liens"]]
     for _, r in df.iterrows():
@@ -493,16 +521,53 @@ def to_recap_csv(df, return_row):
     return export[cols].to_csv(index=False, sep=";").encode("utf-8-sig")
 
 
+def build_timeline(df, return_row, start_address, visit_min):
+    lines = []
+    if df.empty:
+        return lines
+    first = df.iloc[0]
+    lines.append({
+        "Étape": "Départ base",
+        "Lieu": start_address,
+        "Heure conseillée": fmt_dt(first.get("depart_conseille")),
+        "Détail": f"Départ conseillé pour arriver chez {first.get('nom_prospect','')} à {fmt_time(first.get('heure_rdv'))} avec sécurité.",
+    })
+    rows = list(df.iterrows())
+    for i, (_, r) in enumerate(rows):
+        rdv_dt = r.get("rdv_datetime")
+        fin_prevue = rdv_dt + timedelta(minutes=visit_min) if isinstance(rdv_dt, datetime) else None
+        if i + 1 < len(rows):
+            next_r = rows[i+1][1]
+            depart_max = next_r.get("depart_conseille")
+            pause_min = int((depart_max - fin_prevue).total_seconds() // 60) if isinstance(depart_max, datetime) and isinstance(fin_prevue, datetime) else None
+            if pause_min is not None:
+                pause_txt = f"Pause possible : {fmt_duration(pause_min)}" if pause_min >= 0 else f"⚠ retard probable : {fmt_duration(abs(pause_min))}"
+            else:
+                pause_txt = "Pause non calculée"
+            detail = f"RDV prévu {fmt_time(r.get('heure_rdv'))} → fin estimée {fmt_dt(fin_prevue)}. Départ max vers le RDV suivant : {fmt_dt(depart_max)}. {pause_txt}."
+        else:
+            depart_retour = fin_prevue
+            arrivee_retour = depart_retour + timedelta(minutes=int(return_row.get('temps_route_depuis_precedent_min', 0))) if return_row and isinstance(return_row.get('temps_route_depuis_precedent_min'), int) and isinstance(depart_retour, datetime) else None
+            detail = f"RDV prévu {fmt_time(r.get('heure_rdv'))} → fin estimée {fmt_dt(fin_prevue)}. Retour base conseillé à {fmt_dt(depart_retour)}. Arrivée base estimée {fmt_dt(arrivee_retour)}."
+        lines.append({
+            "Étape": f"RDV {r.get('numero_rdv','')}",
+            "Lieu": f"{r.get('nom_prospect','')} — {r.get('adresse_complete','')}",
+            "Heure conseillée": fmt_time(r.get("heure_rdv")),
+            "Détail": detail,
+        })
+    return lines
+
+
 with st.sidebar:
     st.header("Réglages")
     start_address = st.text_input("Adresse de départ / retour", value=DEFAULT_START)
     safety_min = st.number_input("Marge sécurité avant RDV", min_value=0, max_value=60, value=15, step=5)
-    visit_min = st.number_input("Durée moyenne d'un RDV", min_value=15, max_value=240, value=60, step=15)
+    visit_min = st.number_input("Durée moyenne d'un RDV", min_value=15, max_value=240, value=150, step=15)
     use_google = st.checkbox("Utiliser Google trafic / Street View si j'ai une clé API", value=False)
     google_key = st.text_input("Clé Google Maps API (optionnel)", type="password") if use_google else ""
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
-    st.info("V9 : colonnes fixes, ordre par heure RDV, retour base, pauses et PDF enrichi.")
+    st.info("V10 : colonnes fixes, ordre par heure RDV, retour base, pauses et PDF enrichi.")
 
 if uploaded:
     try:
@@ -561,16 +626,22 @@ if not route_df.empty:
     first_dep = route_df.iloc[0].get("depart_conseille")
     col4.metric("Premier départ conseillé", fmt_dt(first_dep))
 
+st.subheader("🧭 Fil conducteur terrain")
+timeline_df = pd.DataFrame(build_timeline(route_df, return_row, start_address, int(visit_min)))
+st.dataframe(timeline_df, use_container_width=True, hide_index=True)
+
 st.subheader("📊 Détail des trajets étape par étape")
 show_cols = ["numero_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "note_trafic"]
 display_df = route_df[show_cols].copy()
 display_df["heure_rdv"] = display_df["heure_rdv"].apply(fmt_time)
 display_df["depart_conseille"] = display_df["depart_conseille"].apply(fmt_dt)
+display_df["pause_avant_rdv_min"] = display_df["pause_avant_rdv_min"].apply(lambda x: "" if x == "" else fmt_duration(x))
+display_df["temps_route_depuis_precedent_min"] = display_df["temps_route_depuis_precedent_min"].apply(fmt_duration)
 display_df = display_df.rename(columns={
     "numero_rdv": "N° RDV", "heure_rdv": "Heure RDV", "depart_conseille": "Départ conseillé",
-    "pause_avant_rdv_min": "Pause avant RDV (min)", "nom_prospect": "Client", "telephone": "Téléphone",
+    "pause_avant_rdv_min": "Pause avant RDV", "nom_prospect": "Client", "telephone": "Téléphone",
     "adresse_complete": "Adresse", "distance_depuis_precedent_km": "Km depuis précédent",
-    "temps_route_depuis_precedent_min": "Temps depuis précédent (min)", "note_trafic": "Calcul"
+    "temps_route_depuis_precedent_min": "Temps depuis précédent", "note_trafic": "Calcul"
 })
 st.dataframe(display_df, use_container_width=True, hide_index=True)
 if return_row:
@@ -579,7 +650,7 @@ if return_row:
 st.subheader("📋 Mode terrain")
 for _, r in route_df.iterrows():
     pause = r.get('pause_avant_rdv_min', '')
-    pause_txt = "" if pause == "" else (f" · Pause dispo : {pause} min" if int(pause) >= 0 else f" · ⚠ Retard probable : {abs(int(pause))} min")
+    pause_txt = "" if pause == "" else (f" · Pause dispo : {fmt_duration(pause)}" if int(pause) >= 0 else f" · ⚠ Retard probable : {fmt_duration(abs(int(pause)))}")
     title = f"RDV {r.get('numero_rdv','')} · {fmt_time(r.get('heure_rdv'))} · {r.get('nom_prospect','')}{pause_txt}"
     with st.expander(title, expanded=(str(r.get('ordre','')) == '1')):
         c1, c2 = st.columns([2, 1])
@@ -603,13 +674,13 @@ except Exception as e:
 
 st.subheader("📤 Exports terrain")
 include_photos = st.checkbox("Essayer d'intégrer les photos Street View dans le PDF", value=bool(google_key), help="Nécessite une clé Google Maps API. Sinon le PDF contient le lien Voir maison cliquable.")
-pdf_bytes = create_pdf(route_df, return_row, start_address, include_photos, google_key)
+pdf_bytes = create_pdf(route_df, return_row, start_address, include_photos, google_key, int(visit_min))
 csv_bytes = to_recap_csv(route_df, return_row)
 
 c1, c2 = st.columns(2)
 with c1:
-    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v9.pdf", mime="application/pdf", use_container_width=True)
+    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v10.pdf", mime="application/pdf", use_container_width=True)
 with c2:
-    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v9.csv", mime="text/csv", use_container_width=True)
+    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v10.csv", mime="text/csv", use_container_width=True)
 
 st.caption("Sans clé Google, le trafic est une estimation prudente. Avec une clé Google Maps API, l'app peut utiliser les durées trafic Google et intégrer des images Street View dans le PDF.")
