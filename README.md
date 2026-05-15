@@ -1,8 +1,15 @@
-# Routage Pro V8 Terrain
+# Routage PRO V9 Terrain
 
-Version terrain sans optimisation : l'ordre est imposé par l'heure de RDV.
+Version pensée pour iPhone + Windows Surface.
 
-Colonnes attendues dans l'Excel :
-A numéro RDV, B adresse, C code postal, D date RDV, E heure début, Q téléphone, R ville, J/N nom/prénom prospect.
+## Mise à jour
+1. Dézipper le dossier.
+2. Sur GitHub `routage-pro`, cliquer **Add file > Upload files**.
+3. Glisser `app.py`, `requirements.txt`, `README.md`.
+4. Cliquer **Commit changes**.
+5. Attendre 1 minute puis recharger Streamlit.
 
-Départ par défaut : 72 avenue des Tourelles, 94490 Ormesson-sur-Marne.
+## Notes importantes
+- L'ordre de tournée est imposé par la date et l'heure de RDV.
+- Sans clé Google Maps API, les temps avec bouchons sont estimés prudemment.
+- Avec une clé Google Maps API, l'app peut utiliser Distance Matrix et Street View Static pour enrichir le PDF.

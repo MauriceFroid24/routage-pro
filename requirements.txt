@@ -4,6 +4,6 @@ openpyxl
 geopy
 folium
 streamlit-folium
-requests
 reportlab
-Pillow
+requests
+pillow

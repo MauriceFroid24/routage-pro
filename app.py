@@ -1,49 +1,37 @@
 import io
 import re
-import time
 import math
-import json
 from datetime import datetime, date, time as dtime, timedelta
 from urllib.parse import quote_plus
 
 import pandas as pd
 import streamlit as st
+import requests
+from PIL import Image as PILImage
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 from geopy.distance import geodesic
 import folium
 from streamlit_folium import st_folium
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfbase.pdfmetrics import stringWidth
 
-st.set_page_config(page_title="Routage PRO V8", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V9", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
-AVG_SPEED_KMH = 42  # estimation route IDF hors trafic réel
+AVG_SPEED_KMH = 38
 
 COLS = {
-    "numero_rdv": 0,
-    "adresse": 1,
-    "code_postal": 2,
-    "date_rdv": 3,
-    "heure_debut": 4,
-    "email": 5,
-    "fournisseur": 7,
-    "commercial_nom": 8,
-    "nom": 9,
-    "telepros_nom": 11,
-    "commercial_prenom": 12,
-    "prenom": 13,
-    "telephone": 16,
-    "ville": 17,
+    "numero_rdv": 0, "adresse": 1, "code_postal": 2, "date_rdv": 3, "heure_debut": 4,
+    "email": 5, "fournisseur": 7, "commercial_nom": 8, "nom": 9, "telepros_nom": 11,
+    "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V8 — terrain")
-st.caption("Ordre imposé par l'heure de RDV · Waze · Google Maps · Street View · PDF cliquable")
+st.title("🚗 Routage PRO V9 — terrain iPhone / Surface")
+st.caption("Ordre par heure de RDV · retour base · pauses · départ conseillé · PDF enrichi · Waze / Maps / appel")
 
 
 def safe_get(row, idx):
@@ -82,20 +70,25 @@ def parse_time(v):
         return v.time().replace(second=0, microsecond=0)
     if isinstance(v, dtime):
         return v.replace(second=0, microsecond=0)
-    # Excel decimal time
     if isinstance(v, (int, float)) and 0 <= v < 1:
         total_minutes = int(round(v * 24 * 60))
         return dtime(total_minutes // 60, total_minutes % 60)
     s = str(v).strip().replace("h", ":").replace("H", ":")
     if re.match(r"^\d{1,2}:\d{2}(:\d{2})?$", s):
-        parts = [int(x) for x in s.split(":")[:2]]
-        return dtime(parts[0], parts[1])
+        h, m = [int(x) for x in s.split(":")[:2]]
+        return dtime(h, m)
     if re.match(r"^\d{1,2}$", s):
         return dtime(int(s), 0)
     try:
         return pd.to_datetime(s).time().replace(second=0, microsecond=0)
     except Exception:
         return None
+
+
+def dt_from_row(d, t):
+    if isinstance(d, date) and isinstance(t, dtime):
+        return datetime.combine(d, t)
+    return None
 
 
 def format_phone(raw):
@@ -105,17 +98,17 @@ def format_phone(raw):
     if len(digits) == 9 and digits[0] in "123456789":
         digits = "0" + digits
     if len(digits) == 10:
-        formatted = " ".join([digits[0:2], digits[2:4], digits[4:6], digits[6:8], digits[8:10]])
-        return formatted, digits
+        return " ".join([digits[0:2], digits[2:4], digits[4:6], digits[6:8], digits[8:10]]), digits
     return str(raw or ""), digits
 
 
 def full_name(prenom, nom):
-    return " ".join([x for x in [str(prenom).strip(), str(nom).strip()] if x and x.lower() != "nan"]).strip() or "Prospect"
+    parts = [str(x).strip() for x in [prenom, nom] if str(x).strip() and str(x).strip().lower() != "nan"]
+    return " ".join(parts) or "Prospect"
 
 
 def build_address(adresse, cp, ville):
-    return ", ".join([x for x in [adresse, cp, ville] if str(x).strip()])
+    return ", ".join([str(x).strip() for x in [adresse, cp, ville] if str(x).strip()])
 
 
 def waze_link(lat, lon, address):
@@ -128,25 +121,105 @@ def maps_link(address):
     return f"https://www.google.com/maps/search/?api=1&query={quote_plus(address)}"
 
 
-def streetview_link(address):
-    return f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={quote_plus(address)}"
+def streetview_link(lat, lon, address):
+    if lat and lon:
+        return f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
+    return maps_link(address)
 
 
 def directions_link(origin, destination):
     return f"https://www.google.com/maps/dir/?api=1&origin={quote_plus(origin)}&destination={quote_plus(destination)}&travelmode=driving"
 
+
+def fmt_date(x):
+    if isinstance(x, date):
+        return x.strftime("%d/%m/%Y")
+    return str(x) if x else ""
+
+
+def fmt_time(x):
+    if isinstance(x, dtime):
+        return x.strftime("%H:%M")
+    return str(x) if x else ""
+
+
+def fmt_dt(x):
+    if isinstance(x, datetime):
+        return x.strftime("%H:%M")
+    return ""
+
+
+def fmt_duration(m):
+    if m == "" or m is None:
+        return ""
+    try:
+        m = int(round(float(m)))
+    except Exception:
+        return ""
+    return f"{m//60}h{m%60:02d}" if m >= 60 else f"{m} min"
+
+
 @st.cache_data(show_spinner=False)
 def geocode_addresses(addresses):
-    geolocator = Nominatim(user_agent="routage_pro_v8_froid24")
+    geolocator = Nominatim(user_agent="routage_pro_v9_froid24")
     geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=1, swallow_exceptions=True)
     out = {}
     for address in addresses:
         loc = geocode(address + ", France")
-        if loc:
-            out[address] = {"lat": loc.latitude, "lon": loc.longitude}
-        else:
-            out[address] = {"lat": None, "lon": None}
+        out[address] = {"lat": loc.latitude, "lon": loc.longitude} if loc else {"lat": None, "lon": None}
     return out
+
+
+@st.cache_data(show_spinner=False)
+def osrm_route(origin_lat, origin_lon, dest_lat, dest_lon):
+    if not all([origin_lat, origin_lon, dest_lat, dest_lon]):
+        return None
+    url = f"https://router.project-osrm.org/route/v1/driving/{origin_lon},{origin_lat};{dest_lon},{dest_lat}?overview=false"
+    try:
+        r = requests.get(url, timeout=8)
+        data = r.json()
+        if data.get("code") == "Ok" and data.get("routes"):
+            route = data["routes"][0]
+            return {"km": route["distance"] / 1000, "min": route["duration"] / 60, "source": "OSRM"}
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def google_distance_matrix(origin, destination, arrival_dt, api_key):
+    if not api_key or not arrival_dt:
+        return None
+    try:
+        departure = max(datetime.now(), arrival_dt - timedelta(hours=2))
+        params = {
+            "origins": origin,
+            "destinations": destination,
+            "mode": "driving",
+            "departure_time": int(departure.timestamp()),
+            "key": api_key,
+        }
+        r = requests.get("https://maps.googleapis.com/maps/api/distancematrix/json", params=params, timeout=10)
+        data = r.json()
+        el = data["rows"][0]["elements"][0]
+        if el.get("status") == "OK":
+            dur = el.get("duration_in_traffic", el.get("duration", {})).get("value", 0) / 60
+            dist = el.get("distance", {}).get("value", 0) / 1000
+            return {"km": dist, "min": dur, "source": "Google trafic"}
+    except Exception:
+        return None
+    return None
+
+
+def traffic_factor(arrival_dt):
+    if not isinstance(arrival_dt, datetime):
+        return 1.25
+    h = arrival_dt.hour + arrival_dt.minute / 60
+    if 7 <= h <= 10 or 16.5 <= h <= 20:
+        return 1.55
+    if 11 <= h <= 16.5:
+        return 1.25
+    return 1.12
 
 
 def prepare_dataframe(file):
@@ -161,7 +234,7 @@ def prepare_dataframe(file):
         d = parse_date(row.iloc[COLS["date_rdv"]] if len(row) > COLS["date_rdv"] else "")
         h = parse_time(row.iloc[COLS["heure_debut"]] if len(row) > COLS["heure_debut"] else "")
         phone_fmt, phone_digits = format_phone(safe_get(row, COLS["telephone"]))
-        item = {
+        rows.append({
             "numero_rdv": safe_get(row, COLS["numero_rdv"]),
             "nom_prospect": full_name(safe_get(row, COLS["prenom"]), safe_get(row, COLS["nom"])),
             "adresse": adresse,
@@ -170,14 +243,14 @@ def prepare_dataframe(file):
             "adresse_complete": build_address(adresse, cp, ville),
             "date_rdv": d,
             "heure_rdv": h,
+            "rdv_datetime": dt_from_row(d, h),
             "telephone": phone_fmt,
             "telephone_tel": phone_digits,
             "email": safe_get(row, COLS["email"]),
             "fournisseur": safe_get(row, COLS["fournisseur"]),
             "commercial": full_name(safe_get(row, COLS["commercial_prenom"]), safe_get(row, COLS["commercial_nom"])),
-            "teleprospecteur": full_name(safe_get(row, COLS["telepros_nom"]), safe_get(row, COLS["telepros_nom"])),
-        }
-        rows.append(item)
+            "teleprospecteur": safe_get(row, COLS["telepros_nom"]),
+        })
     result = pd.DataFrame(rows)
     if not result.empty:
         result["sort_date"] = result["date_rdv"].apply(lambda x: x or date.max)
@@ -187,137 +260,249 @@ def prepare_dataframe(file):
     return result
 
 
-def enrich_route(df, start_address):
+def route_between(prev_addr, prev_geo, addr, coord, arrival_dt, api_key, use_google):
+    if use_google and api_key:
+        g = google_distance_matrix(prev_addr, addr, arrival_dt, api_key)
+        if g:
+            return g
+    o = osrm_route(prev_geo.get("lat"), prev_geo.get("lon"), coord.get("lat"), coord.get("lon"))
+    if o:
+        return o
+    if prev_geo.get("lat") and prev_geo.get("lon") and coord.get("lat") and coord.get("lon"):
+        dist = geodesic((prev_geo["lat"], prev_geo["lon"]), (coord["lat"], coord["lon"])).km * 1.28
+        mins = (dist / AVG_SPEED_KMH) * 60
+        return {"km": dist, "min": mins, "source": "Estimation"}
+    return {"km": None, "min": None, "source": "Non calculé"}
+
+
+def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
     addresses = [start_address] + df["adresse_complete"].tolist()
     geo = geocode_addresses(addresses)
     prev_addr = start_address
-    prev_coord = geo.get(start_address, {})
+    prev_geo = geo.get(start_address, {})
+    previous_rdv_end = None
     out = []
-    cumulative_km = 0
-    cumulative_min = 0
+    cumulative_km = 0.0
+    cumulative_min = 0.0
+
     for _, row in df.iterrows():
         addr = row["adresse_complete"]
         coord = geo.get(addr, {})
-        lat, lon = coord.get("lat"), coord.get("lon")
-        dist = None
-        mins = None
-        if prev_coord.get("lat") and prev_coord.get("lon") and lat and lon:
-            dist = geodesic((prev_coord["lat"], prev_coord["lon"]), (lat, lon)).km * 1.25  # facteur route estimatif
-            mins = int(round((dist / AVG_SPEED_KMH) * 60))
-        cumulative_km += dist or 0
-        cumulative_min += mins or 0
+        arrival_dt = row.get("rdv_datetime")
+        rb = route_between(prev_addr, prev_geo, addr, coord, arrival_dt, api_key, use_google)
+        km = rb.get("km")
+        raw_min = rb.get("min")
+        if raw_min is not None:
+            if rb.get("source") == "Google trafic":
+                drive_min = int(math.ceil(raw_min))
+                traffic_note = "trafic Google"
+            else:
+                drive_min = int(math.ceil(raw_min * traffic_factor(arrival_dt)))
+                traffic_note = "trafic estimé"
+        else:
+            drive_min = None
+            traffic_note = "non calculé"
+
+        advised_departure = arrival_dt - timedelta(minutes=(drive_min or 0) + safety_min) if arrival_dt and drive_min is not None else None
+        if previous_rdv_end and advised_departure:
+            pause_min = int((advised_departure - previous_rdv_end).total_seconds() // 60)
+        else:
+            pause_min = None
+        previous_rdv_end = arrival_dt + timedelta(minutes=visit_min) if arrival_dt else None
+        cumulative_km += km or 0
+        cumulative_min += drive_min or 0
+
         r = row.to_dict()
         r.update({
-            "lat": lat,
-            "lon": lon,
-            "distance_depuis_precedent_km": round(dist, 1) if dist is not None else "",
-            "temps_route_depuis_precedent_min": mins if mins is not None else "",
+            "lat": coord.get("lat"), "lon": coord.get("lon"),
+            "distance_depuis_precedent_km": round(km, 1) if km is not None else "",
+            "temps_route_depuis_precedent_min": drive_min if drive_min is not None else "",
+            "source_temps": rb.get("source", ""),
+            "note_trafic": traffic_note,
+            "depart_conseille": advised_departure,
+            "marge_securite_min": safety_min,
+            "pause_avant_rdv_min": pause_min if pause_min is not None else "",
             "distance_cumulee_km": round(cumulative_km, 1),
-            "temps_route_cumule_min": cumulative_min,
-            "waze": waze_link(lat, lon, addr),
+            "temps_route_cumule_min": int(cumulative_min),
+            "waze": waze_link(coord.get("lat"), coord.get("lon"), addr),
             "google_maps": maps_link(addr),
-            "street_view": streetview_link(addr),
+            "street_view": streetview_link(coord.get("lat"), coord.get("lon"), addr),
             "itineraire_depuis_precedent": directions_link(prev_addr, addr),
         })
         out.append(r)
         prev_addr = addr
-        prev_coord = coord
-    return pd.DataFrame(out), geo.get(start_address, {})
+        prev_geo = coord
+
+    route_df = pd.DataFrame(out)
+
+    # Retour base après le dernier RDV
+    return_row = None
+    if not route_df.empty:
+        last = route_df.iloc[-1]
+        last_addr = last["adresse_complete"]
+        last_geo = {"lat": last.get("lat"), "lon": last.get("lon")}
+        last_end = last.get("rdv_datetime") + timedelta(minutes=visit_min) if isinstance(last.get("rdv_datetime"), datetime) else None
+        rb = route_between(last_addr, last_geo, start_address, geo.get(start_address, {}), last_end, api_key, use_google)
+        km = rb.get("km")
+        raw_min = rb.get("min")
+        ret_min = int(math.ceil(raw_min * (1 if rb.get("source") == "Google trafic" else traffic_factor(last_end)))) if raw_min is not None else ""
+        return_row = {
+            "ordre": "Retour", "numero_rdv": "BASE", "date_rdv": last.get("date_rdv", ""), "heure_rdv": "",
+            "rdv_datetime": last_end, "nom_prospect": "Retour base", "telephone": "", "telephone_tel": "",
+            "adresse_complete": start_address, "lat": geo.get(start_address, {}).get("lat"), "lon": geo.get(start_address, {}).get("lon"),
+            "distance_depuis_precedent_km": round(km, 1) if km is not None else "",
+            "temps_route_depuis_precedent_min": ret_min,
+            "source_temps": rb.get("source", ""), "note_trafic": "retour inclus",
+            "depart_conseille": last_end, "pause_avant_rdv_min": "", "marge_securite_min": 0,
+            "distance_cumulee_km": round(cumulative_km + (km or 0), 1),
+            "temps_route_cumule_min": int(cumulative_min + (ret_min if isinstance(ret_min, int) else 0)),
+            "waze": waze_link(geo.get(start_address, {}).get("lat"), geo.get(start_address, {}).get("lon"), start_address),
+            "google_maps": maps_link(start_address), "street_view": maps_link(start_address),
+            "itineraire_depuis_precedent": directions_link(last_addr, start_address),
+        }
+    return route_df, return_row, geo.get(start_address, {})
 
 
-def make_map(df, start_address, start_geo):
-    valid = df.dropna(subset=["lat", "lon"])
+def make_map(df, return_row, start_address, start_geo):
+    map_df = df.copy()
+    if return_row:
+        map_df = pd.concat([map_df, pd.DataFrame([return_row])], ignore_index=True)
+    valid = map_df.dropna(subset=["lat", "lon"])
     if not valid.empty:
         center = [valid["lat"].mean(), valid["lon"].mean()]
     elif start_geo.get("lat"):
         center = [start_geo["lat"], start_geo["lon"]]
     else:
         center = [48.79, 2.53]
-    m = folium.Map(location=center, zoom_start=11)
-    if start_geo.get("lat") and start_geo.get("lon"):
-        folium.Marker([start_geo["lat"], start_geo["lon"]], tooltip="Départ", popup=start_address, icon=folium.Icon(color="green", icon="home")).add_to(m)
+    m = folium.Map(location=center, zoom_start=11, tiles="OpenStreetMap")
     points = []
+    if start_geo.get("lat") and start_geo.get("lon"):
+        folium.Marker([start_geo["lat"], start_geo["lon"]], tooltip="Départ / retour", popup=start_address, icon=folium.Icon(color="green", icon="home")).add_to(m)
+        points.append([start_geo["lat"], start_geo["lon"]])
     for _, r in df.iterrows():
         if not r.get("lat") or not r.get("lon"):
             continue
-        label = f"{r['numero_rdv']} - {r['nom_prospect']} - {r['heure_rdv'].strftime('%H:%M') if isinstance(r['heure_rdv'], dtime) else ''} - {r['telephone']}"
+        time_label = fmt_time(r.get("heure_rdv"))
+        label = f"{r.get('numero_rdv','')} - {r.get('nom_prospect','')} - {time_label} - {r.get('telephone','')}"
         html = f"""
-        <div style='font-size:12px;font-weight:bold;background:white;border:1px solid #333;border-radius:5px;padding:3px;white-space:nowrap;'>
-        {r['numero_rdv']} - {r['nom_prospect']}<br>🕒 {r['heure_rdv'].strftime('%H:%M') if isinstance(r['heure_rdv'], dtime) else ''} &nbsp; 📞 {r['telephone']}
+        <div style='font-size:16px;line-height:18px;font-weight:800;background:#fff200;color:#000;border:2px solid #111;border-radius:8px;padding:5px 7px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);'>
+        #{r.get('numero_rdv','')} · {r.get('nom_prospect','')}<br>🕒 {time_label} &nbsp; 📞 {r.get('telephone','')}
         </div>"""
-        folium.Marker([r["lat"], r["lon"]], tooltip=label, popup=folium.Popup(label, max_width=350), icon=folium.Icon(color="blue", icon="user")).add_to(m)
+        folium.Marker([r["lat"], r["lon"]], tooltip=label, popup=folium.Popup(label, max_width=380), icon=folium.Icon(color="blue", icon="user")).add_to(m)
         folium.map.Marker([r["lat"], r["lon"]], icon=folium.DivIcon(html=html)).add_to(m)
         points.append([r["lat"], r["lon"]])
-    if start_geo.get("lat") and start_geo.get("lon"):
-        points = [[start_geo["lat"], start_geo["lon"]]] + points
+    if return_row and return_row.get("lat") and return_row.get("lon"):
+        points.append([return_row["lat"], return_row["lon"]])
     if len(points) >= 2:
-        folium.PolyLine(points, weight=3, opacity=0.7).add_to(m)
+        folium.PolyLine(points, weight=4, opacity=0.8, color="red").add_to(m)
     return m
 
 
-def fmt_date(x):
-    return x.strftime("%d/%m/%Y") if isinstance(x, date) else ""
+def streetview_static_image(lat, lon, api_key):
+    if not api_key or not lat or not lon:
+        return None
+    try:
+        params = {"size": "420x240", "location": f"{lat},{lon}", "fov": "90", "heading": "0", "pitch": "0", "key": api_key}
+        r = requests.get("https://maps.googleapis.com/maps/api/streetview", params=params, timeout=8)
+        if r.status_code == 200 and r.content:
+            return io.BytesIO(r.content)
+    except Exception:
+        return None
+    return None
 
-def fmt_time(x):
-    return x.strftime("%H:%M") if isinstance(x, dtime) else ""
 
-def fmt_duration(m):
-    if m == "" or pd.isna(m): return ""
-    m = int(m)
-    return f"{m//60}h{m%60:02d}" if m >= 60 else f"{m} min"
-
-
-def create_pdf(df, start_address):
+def create_pdf(df, return_row, start_address, include_photos, google_key):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=0.8*cm, leftMargin=0.8*cm, topMargin=0.8*cm, bottomMargin=0.8*cm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=0.7*cm, leftMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleCustom', parent=styles['Title'], fontSize=18, leading=22, spaceAfter=8)
-    small = ParagraphStyle('Small', parent=styles['Normal'], fontSize=7.5, leading=9)
+    title = ParagraphStyle('TitleCustom', parent=styles['Title'], fontSize=18, leading=22, spaceAfter=8)
+    h2 = ParagraphStyle('H2Custom', parent=styles['Heading2'], fontSize=13, leading=15, spaceBefore=8, spaceAfter=4)
+    small = ParagraphStyle('Small', parent=styles['Normal'], fontSize=7.4, leading=9)
     normal = ParagraphStyle('NormalCustom', parent=styles['Normal'], fontSize=9, leading=11)
     story = []
-    story.append(Paragraph("Tournée terrain — Routage PRO V8", title_style))
-    story.append(Paragraph(f"Départ : {start_address}", normal))
-    story.append(Paragraph("Ordre imposé par l'heure de RDV. Liens cliquables sur PC/iPhone.", small))
-    story.append(Spacer(1, 0.25*cm))
-    data = [["#", "RDV", "Client", "Adresse", "Trajet", "Actions"]]
+
+    total_km = pd.to_numeric(df["distance_depuis_precedent_km"], errors="coerce").fillna(0).sum() + (return_row.get("distance_depuis_precedent_km", 0) if return_row else 0)
+    total_min = pd.to_numeric(df["temps_route_depuis_precedent_min"], errors="coerce").fillna(0).sum() + (return_row.get("temps_route_depuis_precedent_min", 0) if return_row and isinstance(return_row.get("temps_route_depuis_precedent_min"), int) else 0)
+
+    story.append(Paragraph("Tournée terrain — Routage PRO V9", title))
+    story.append(Paragraph(f"Départ / retour : {start_address}", normal))
+    story.append(Paragraph(f"RDV : {len(df)} · Distance totale retour inclus : {total_km:.1f} km · Temps route : {fmt_duration(total_min)}", normal))
+    story.append(Spacer(1, 0.2*cm))
+
+    data = [["#", "RDV", "Client", "Adresse", "Trajet", "Départ conseillé", "Pause", "Liens"]]
     for _, r in df.iterrows():
-        client = f"{r['nom_prospect']}<br/>{r['telephone']}"
-        rdv = f"{fmt_date(r['date_rdv'])}<br/>{fmt_time(r['heure_rdv'])}"
-        addr = r['adresse_complete']
-        trajet = f"{r['distance_depuis_precedent_km']} km<br/>{fmt_duration(r['temps_route_depuis_precedent_min'])}"
-        actions = f"<a href='{r['waze']}'>Waze</a><br/><a href='{r['google_maps']}'>Maps</a><br/><a href='{r['street_view']}'>Maison</a>"
+        links = f"<a href='{r['waze']}'>Waze</a><br/><a href='{r['google_maps']}'>Maps</a><br/><a href='{r['street_view']}'>Maison</a>"
         if r.get('telephone_tel'):
-            actions += f"<br/><a href='tel:{r['telephone_tel']}'>Appeler</a>"
-        data.append([str(r['ordre']), rdv, Paragraph(client, small), Paragraph(addr, small), Paragraph(trajet, small), Paragraph(actions, small)])
-    table = Table(data, colWidths=[0.7*cm, 1.8*cm, 3.1*cm, 6.2*cm, 1.7*cm, 2.5*cm], repeatRows=1)
+            links += f"<br/><a href='tel:{r['telephone_tel']}'>Appeler</a>"
+        pause = r.get("pause_avant_rdv_min", "")
+        pause_txt = "" if pause == "" else (f"{pause} min" if int(pause) >= 0 else f"⚠ retard {abs(int(pause))} min")
+        data.append([
+            str(r.get('numero_rdv','')),
+            Paragraph(f"{fmt_date(r.get('date_rdv'))}<br/><b>{fmt_time(r.get('heure_rdv'))}</b>", small),
+            Paragraph(f"<b>{r.get('nom_prospect','')}</b><br/>{r.get('telephone','')}", small),
+            Paragraph(r.get('adresse_complete',''), small),
+            Paragraph(f"{r.get('distance_depuis_precedent_km','')} km<br/>{fmt_duration(r.get('temps_route_depuis_precedent_min',''))}<br/>{r.get('note_trafic','')}", small),
+            Paragraph(fmt_dt(r.get('depart_conseille')), small),
+            Paragraph(pause_txt, small),
+            Paragraph(links, small),
+        ])
+    if return_row:
+        data.append(["BASE", "", Paragraph("<b>Retour base</b>", small), Paragraph(start_address, small), Paragraph(f"{return_row.get('distance_depuis_precedent_km','')} km<br/>{fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))}", small), "", "", Paragraph(f"<a href='{return_row.get('waze','#')}'>Waze</a><br/><a href='{return_row.get('google_maps','#')}'>Maps</a>", small)])
+    table = Table(data, colWidths=[1.0*cm, 1.7*cm, 2.8*cm, 5.0*cm, 2.0*cm, 2.0*cm, 1.4*cm, 2.0*cm], repeatRows=1)
     table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1f2937')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('GRID', (0,0), (-1,-1), 0.25, colors.grey),
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('FONTSIZE', (0,0), (-1,-1), 7.5),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#f3f4f6')]),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#111827')), ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('GRID', (0,0), (-1,-1), 0.25, colors.grey), ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('FONTSIZE', (0,0), (-1,-1), 7.2), ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#f3f4f6')]),
     ]))
     story.append(table)
+
+    story.append(PageBreak())
+    story.append(Paragraph("Fiches prospects", title))
+    for _, r in df.iterrows():
+        story.append(Paragraph(f"#{r.get('numero_rdv','')} — {r.get('nom_prospect','')} — {fmt_time(r.get('heure_rdv'))}", h2))
+        info = f"<b>Adresse :</b> {r.get('adresse_complete','')}<br/><b>Téléphone :</b> {r.get('telephone','')}<br/><b>Départ conseillé :</b> {fmt_dt(r.get('depart_conseille'))}<br/><b>Trajet :</b> {r.get('distance_depuis_precedent_km','')} km · {fmt_duration(r.get('temps_route_depuis_precedent_min',''))}<br/><a href='{r.get('waze','#')}'>Ouvrir Waze</a> · <a href='{r.get('google_maps','#')}'>Google Maps</a> · <a href='{r.get('street_view','#')}'>Voir maison</a>"
+        if r.get('telephone_tel'):
+            info += f" · <a href='tel:{r.get('telephone_tel')}'>Appeler</a>"
+        story.append(Paragraph(info, normal))
+        if include_photos and google_key:
+            img_bytes = streetview_static_image(r.get('lat'), r.get('lon'), google_key)
+            if img_bytes:
+                try:
+                    story.append(Image(img_bytes, width=11*cm, height=6.3*cm))
+                except Exception:
+                    story.append(Paragraph("Image Street View indisponible — utiliser le lien Voir maison.", small))
+            else:
+                story.append(Paragraph("Image Street View indisponible — utiliser le lien Voir maison.", small))
+        else:
+            story.append(Paragraph("Photo maison : lien cliquable Voir maison disponible ci-dessus. Pour intégrer les photos directement, renseigner une clé Google Maps API.", small))
+        story.append(Spacer(1, 0.25*cm))
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
 
-def to_recap_csv(df):
+def to_recap_csv(df, return_row):
     export = df.copy()
     export["date_rdv"] = export["date_rdv"].apply(fmt_date)
     export["heure_rdv"] = export["heure_rdv"].apply(fmt_time)
+    export["depart_conseille"] = export["depart_conseille"].apply(fmt_dt)
     export["lien_appel"] = export["telephone_tel"].apply(lambda x: f"tel:{x}" if x else "")
-    cols = ["ordre", "numero_rdv", "date_rdv", "heure_rdv", "nom_prospect", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "waze", "google_maps", "street_view", "lien_appel"]
+    cols = ["ordre", "numero_rdv", "date_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "source_temps", "waze", "google_maps", "street_view", "lien_appel"]
+    if return_row:
+        export = pd.concat([export[cols], pd.DataFrame([{c: return_row.get(c, "") for c in cols}])], ignore_index=True)
     return export[cols].to_csv(index=False, sep=";").encode("utf-8-sig")
+
 
 with st.sidebar:
     st.header("Réglages")
-    start_address = st.text_input("Adresse de départ", value=DEFAULT_START)
+    start_address = st.text_input("Adresse de départ / retour", value=DEFAULT_START)
+    safety_min = st.number_input("Marge sécurité avant RDV", min_value=0, max_value=60, value=15, step=5)
+    visit_min = st.number_input("Durée moyenne d'un RDV", min_value=15, max_value=240, value=60, step=15)
+    use_google = st.checkbox("Utiliser Google trafic / Street View si j'ai une clé API", value=False)
+    google_key = st.text_input("Clé Google Maps API (optionnel)", type="password") if use_google else ""
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
-    st.info("V8 : plus besoin d'assigner les colonnes. Le format est fixé selon ton fichier.")
+    st.info("V9 : colonnes fixes, ordre par heure RDV, retour base, pauses et PDF enrichi.")
 
 if uploaded:
     try:
@@ -325,12 +510,15 @@ if uploaded:
         if df.empty:
             st.error("Aucune adresse trouvée dans le fichier.")
             st.stop()
-        st.success(f"{len(df)} RDV chargés. Ordre trié par date et heure de RDV.")
-        with st.spinner("Géocodage des adresses et préparation des liens terrain..."):
-            route_df, start_geo = enrich_route(df, start_address)
+        st.success(f"{len(df)} RDV chargés. Ordre imposé par date + heure de RDV.")
+        with st.spinner("Géocodage, trajets, pauses, départs conseillés..."):
+            route_df, return_row, start_geo = enrich_route(df, start_address, int(safety_min), int(visit_min), use_google, google_key)
         st.session_state["route_df"] = route_df
+        st.session_state["return_row"] = return_row
         st.session_state["start_address"] = start_address
         st.session_state["start_geo"] = start_geo
+        st.session_state["google_key"] = google_key
+        st.session_state["use_google"] = use_google
     except Exception as e:
         st.exception(e)
         st.stop()
@@ -338,9 +526,12 @@ elif saved:
     try:
         route_df = pd.read_csv(saved, sep=";")
         st.session_state["route_df"] = route_df
+        st.session_state["return_row"] = None
         st.session_state["start_address"] = start_address
         st.session_state["start_geo"] = {}
-        st.success("Récap chargé.")
+        st.session_state["google_key"] = ""
+        st.session_state["use_google"] = False
+        st.success("Récap chargé. Les liens restent utilisables.")
     except Exception as e:
         st.exception(e)
 
@@ -353,45 +544,72 @@ A numéro RDV · B adresse · C code postal · D date RDV · E heure RDV · J/N 
     st.stop()
 
 route_df = st.session_state["route_df"]
+return_row = st.session_state.get("return_row")
 start_address = st.session_state.get("start_address", DEFAULT_START)
 start_geo = st.session_state.get("start_geo", {})
+google_key = st.session_state.get("google_key", "")
+use_google = st.session_state.get("use_google", False)
 
-col1, col2, col3 = st.columns(3)
+total_km = pd.to_numeric(route_df.get("distance_depuis_precedent_km"), errors="coerce").fillna(0).sum() + (return_row.get("distance_depuis_precedent_km", 0) if return_row else 0)
+total_min = pd.to_numeric(route_df.get("temps_route_depuis_precedent_min"), errors="coerce").fillna(0).sum() + (return_row.get("temps_route_depuis_precedent_min", 0) if return_row and isinstance(return_row.get("temps_route_depuis_precedent_min"), int) else 0)
+
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("RDV", len(route_df))
-if "distance_depuis_precedent_km" in route_df:
-    col2.metric("Distance estimée", f"{pd.to_numeric(route_df['distance_depuis_precedent_km'], errors='coerce').fillna(0).sum():.1f} km")
-    col3.metric("Temps route estimé", fmt_duration(pd.to_numeric(route_df['temps_route_depuis_precedent_min'], errors='coerce').fillna(0).sum()))
+col2.metric("Distance retour inclus", f"{total_km:.1f} km")
+col3.metric("Temps route", fmt_duration(total_min))
+if not route_df.empty:
+    first_dep = route_df.iloc[0].get("depart_conseille")
+    col4.metric("Premier départ conseillé", fmt_dt(first_dep))
 
-st.subheader("📋 Tournée terrain")
+st.subheader("📊 Détail des trajets étape par étape")
+show_cols = ["numero_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "note_trafic"]
+display_df = route_df[show_cols].copy()
+display_df["heure_rdv"] = display_df["heure_rdv"].apply(fmt_time)
+display_df["depart_conseille"] = display_df["depart_conseille"].apply(fmt_dt)
+display_df = display_df.rename(columns={
+    "numero_rdv": "N° RDV", "heure_rdv": "Heure RDV", "depart_conseille": "Départ conseillé",
+    "pause_avant_rdv_min": "Pause avant RDV (min)", "nom_prospect": "Client", "telephone": "Téléphone",
+    "adresse_complete": "Adresse", "distance_depuis_precedent_km": "Km depuis précédent",
+    "temps_route_depuis_precedent_min": "Temps depuis précédent (min)", "note_trafic": "Calcul"
+})
+st.dataframe(display_df, use_container_width=True, hide_index=True)
+if return_row:
+    st.info(f"Retour base inclus : {return_row.get('distance_depuis_precedent_km','')} km · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))}")
+
+st.subheader("📋 Mode terrain")
 for _, r in route_df.iterrows():
-    title = f"{r.get('ordre','')} — RDV {r.get('numero_rdv','')} · {fmt_time(r.get('heure_rdv')) if not isinstance(r.get('heure_rdv'), str) else r.get('heure_rdv','')} · {r.get('nom_prospect','')}"
-    with st.expander(title, expanded=(int(r.get('ordre', 99)) == 1 if str(r.get('ordre','')).isdigit() else False)):
+    pause = r.get('pause_avant_rdv_min', '')
+    pause_txt = "" if pause == "" else (f" · Pause dispo : {pause} min" if int(pause) >= 0 else f" · ⚠ Retard probable : {abs(int(pause))} min")
+    title = f"RDV {r.get('numero_rdv','')} · {fmt_time(r.get('heure_rdv'))} · {r.get('nom_prospect','')}{pause_txt}"
+    with st.expander(title, expanded=(str(r.get('ordre','')) == '1')):
         c1, c2 = st.columns([2, 1])
         with c1:
             st.markdown(f"**Adresse :** {r.get('adresse_complete','')}")
             st.markdown(f"**Téléphone :** {r.get('telephone','')}")
-            st.markdown(f"**Trajet depuis précédent :** {r.get('distance_depuis_precedent_km','')} km · {fmt_duration(r.get('temps_route_depuis_precedent_min',''))}")
+            st.markdown(f"**Départ conseillé :** {fmt_dt(r.get('depart_conseille'))} avec {r.get('marge_securite_min', safety_min)} min de sécurité")
+            st.markdown(f"**Trajet depuis précédent :** {r.get('distance_depuis_precedent_km','')} km · {fmt_duration(r.get('temps_route_depuis_precedent_min',''))} · {r.get('note_trafic','')}")
         with c2:
-            st.link_button("🚗 Waze", r.get('waze', '#'))
-            st.link_button("🗺️ Google Maps", r.get('google_maps', '#'))
-            st.link_button("🏠 Voir maison", r.get('street_view', '#'))
+            st.link_button("🚗 Waze", r.get('waze', '#'), use_container_width=True)
+            st.link_button("🗺️ Google Maps", r.get('google_maps', '#'), use_container_width=True)
+            st.link_button("🏠 Voir maison", r.get('street_view', '#'), use_container_width=True)
             if r.get('telephone_tel'):
-                st.link_button("📞 Appeler", f"tel:{r.get('telephone_tel')}")
+                st.link_button("📞 Appeler", f"tel:{r.get('telephone_tel')}", use_container_width=True)
 
 st.subheader("🗺️ Carte générale")
 try:
-    st_folium(make_map(route_df, start_address, start_geo), height=620, use_container_width=True)
+    st_folium(make_map(route_df, return_row, start_address, start_geo), height=650, use_container_width=True)
 except Exception as e:
     st.warning(f"Carte non disponible : {e}")
 
 st.subheader("📤 Exports terrain")
-pdf_bytes = create_pdf(route_df, start_address)
-csv_bytes = to_recap_csv(route_df)
+include_photos = st.checkbox("Essayer d'intégrer les photos Street View dans le PDF", value=bool(google_key), help="Nécessite une clé Google Maps API. Sinon le PDF contient le lien Voir maison cliquable.")
+pdf_bytes = create_pdf(route_df, return_row, start_address, include_photos, google_key)
+csv_bytes = to_recap_csv(route_df, return_row)
 
 c1, c2 = st.columns(2)
 with c1:
-    st.download_button("📄 Télécharger PDF cliquable", data=pdf_bytes, file_name="tournee_terrain_v8.pdf", mime="application/pdf")
+    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v9.pdf", mime="application/pdf", use_container_width=True)
 with c2:
-    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v8.csv", mime="text/csv")
+    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v9.csv", mime="text/csv", use_container_width=True)
 
-st.caption("Astuce iPhone : le PDF conserve les liens Waze / Maps / Appeler. Si l'upload iPhone bloque, utilise Chrome ou prépare la tournée sur Surface puis ouvre le PDF sur iPhone.")
+st.caption("Sans clé Google, le trafic est une estimation prudente. Avec une clé Google Maps API, l'app peut utiliser les durées trafic Google et intégrer des images Street View dans le PDF.")
