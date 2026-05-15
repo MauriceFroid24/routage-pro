@@ -20,7 +20,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V13", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V14", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -32,18 +32,57 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V13 — terrain iPhone / Surface")
-st.caption("Mode sombre · calcul automatique · route réelle OSRM · retour base · pauses · départ conseillé · PDF enrichi")
+st.title("🚗 Routage PRO V14 — terrain iPhone / Surface")
+st.caption("Mode sombre lisible · carte claire · calcul automatique · route réelle OSRM · retour base · pauses · départ conseillé")
 
 st.markdown("""
 <style>
-.stApp { background:#050505; color:#f5f5f5; }
-[data-testid="stSidebar"] { background:#0f1115; }
-[data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color:#ffffff !important; }
-.block-container { padding-top: 2rem; }
-.stAlert { border-radius:14px; }
-div[data-testid="stDataFrame"] { border-radius:14px; overflow:hidden; }
-.stButton button, .stDownloadButton button, .stLinkButton a { border-radius:14px !important; font-weight:700 !important; }
+.stApp {
+    background-color:#050505;
+    color:#f5f5f5;
+}
+[data-testid="stSidebar"] {
+    background-color:#0f1115;
+}
+.block-container {
+    padding-top: 1.2rem;
+}
+.stAlert {
+    border-radius:14px;
+    background-color:#171717 !important;
+    color:#ffffff !important;
+    border:1px solid #333333 !important;
+}
+.stAlert p, .stAlert div {
+    color:#ffffff !important;
+}
+[data-testid="stMetric"] {
+    background-color:#161616;
+    border-radius:14px;
+    padding:12px;
+    border:1px solid #333333;
+}
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
+    color:#ffffff !important;
+}
+div[data-testid="stDataFrame"] {
+    border-radius:14px;
+    overflow:hidden;
+    border:1px solid #333333;
+}
+.stButton button, .stDownloadButton button, .stLinkButton a {
+    border-radius:14px !important;
+    font-weight:800 !important;
+    background-color:#222222 !important;
+    color:#ffffff !important;
+    border:1px solid #444444 !important;
+}
+.stLinkButton a {
+    text-decoration:none !important;
+}
+hr {
+    border-color:#333333 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -429,7 +468,7 @@ def make_map(df, return_row, start_address, start_geo):
         center = [start_geo["lat"], start_geo["lon"]]
     else:
         center = [48.79, 2.53]
-    m = folium.Map(location=center, zoom_start=11, tiles="CartoDB dark_matter")
+    m = folium.Map(location=center, zoom_start=11, tiles="OpenStreetMap")
     points = []
     if start_geo.get("lat") and start_geo.get("lon"):
         folium.Marker([start_geo["lat"], start_geo["lon"]], tooltip="Départ / retour", popup=start_address, icon=folium.Icon(color="green", icon="home")).add_to(m)
@@ -494,7 +533,7 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
     total_min = int(pd.to_numeric(df.get("temps_route_depuis_precedent_min", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
     total_min += to_minutes(return_row.get("temps_route_depuis_precedent_min", 0) if return_row else 0)
 
-    story.append(Paragraph("Tournée terrain — Routage PRO V13", title))
+    story.append(Paragraph("Tournée terrain — Routage PRO V14", title))
     story.append(Paragraph(f"Départ / retour : {start_address}", normal))
     story.append(Paragraph(f"RDV : {len(df)} · Distance totale retour inclus : {total_km:.1f} km · Temps route : {fmt_duration(total_min)}", normal))
     story.append(Spacer(1, 0.2*cm))
