@@ -1,6 +1,7 @@
 import io
 import re
 import math
+from pathlib import Path
 from datetime import datetime, date, time as dtime, timedelta
 from urllib.parse import quote_plus
 
@@ -19,10 +20,11 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V10", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V11", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
+LAST_UPLOAD_PATH = Path("/tmp/routage_pro_dernier_fichier.xlsx")
 
 COLS = {
     "numero_rdv": 0, "adresse": 1, "code_postal": 2, "date_rdv": 3, "heure_debut": 4,
@@ -30,7 +32,7 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V10 — terrain iPhone / Surface")
+st.title("🚗 Routage PRO V11 — terrain iPhone / Surface")
 st.caption("Ordre par heure de RDV · retour base · pauses · départ conseillé · PDF enrichi · Waze / Maps / appel")
 
 
@@ -443,7 +445,7 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
     total_km = pd.to_numeric(df["distance_depuis_precedent_km"], errors="coerce").fillna(0).sum() + (return_row.get("distance_depuis_precedent_km", 0) if return_row else 0)
     total_min = pd.to_numeric(df["temps_route_depuis_precedent_min"], errors="coerce").fillna(0).sum() + (return_row.get("temps_route_depuis_precedent_min", 0) if return_row and isinstance(return_row.get("temps_route_depuis_precedent_min"), int) else 0)
 
-    story.append(Paragraph("Tournée terrain — Routage PRO V10", title))
+    story.append(Paragraph("Tournée terrain — Routage PRO V11", title))
     story.append(Paragraph(f"Départ / retour : {start_address}", normal))
     story.append(Paragraph(f"RDV : {len(df)} · Distance totale retour inclus : {total_km:.1f} km · Temps route : {fmt_duration(total_min)}", normal))
     story.append(Spacer(1, 0.2*cm))
@@ -558,6 +560,46 @@ def build_timeline(df, return_row, start_address, visit_min):
     return lines
 
 
+
+def to_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+def to_minutes(value, default=0):
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+def save_last_uploaded(uploaded_file):
+    try:
+        data = uploaded_file.getvalue()
+        LAST_UPLOAD_PATH.write_bytes(data)
+        st.session_state["last_upload_bytes"] = data
+        st.session_state["last_upload_name"] = uploaded_file.name
+        return io.BytesIO(data)
+    except Exception:
+        return uploaded_file
+
+def get_last_uploaded_file():
+    if st.session_state.get("last_upload_bytes"):
+        return io.BytesIO(st.session_state["last_upload_bytes"])
+    if LAST_UPLOAD_PATH.exists():
+        try:
+            data = LAST_UPLOAD_PATH.read_bytes()
+            st.session_state["last_upload_bytes"] = data
+            st.session_state["last_upload_name"] = "dernier_fichier.xlsx"
+            return io.BytesIO(data)
+        except Exception:
+            return None
+    return None
+
 with st.sidebar:
     st.header("Réglages")
     start_address = st.text_input("Adresse de départ / retour", value=DEFAULT_START)
@@ -567,15 +609,25 @@ with st.sidebar:
     google_key = st.text_input("Clé Google Maps API (optionnel)", type="password") if use_google else ""
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
-    st.info("V10 : colonnes fixes, ordre par heure RDV, retour base, pauses et PDF enrichi.")
+    auto_reload = st.checkbox("Recharger automatiquement le dernier Excel de la journée", value=True)
+    st.info("V11 : correction erreur total km + dernier fichier auto + colonnes fixes + PDF terrain.")
 
+source_file = None
+source_label = ""
 if uploaded:
+    source_file = save_last_uploaded(uploaded)
+    source_label = uploaded.name
+elif auto_reload:
+    source_file = get_last_uploaded_file()
+    source_label = st.session_state.get("last_upload_name", "dernier fichier")
+
+if source_file:
     try:
-        df = prepare_dataframe(uploaded)
+        df = prepare_dataframe(source_file)
         if df.empty:
             st.error("Aucune adresse trouvée dans le fichier.")
             st.stop()
-        st.success(f"{len(df)} RDV chargés. Ordre imposé par date + heure de RDV.")
+        st.success(f"{len(df)} RDV chargés depuis {source_label}. Ordre imposé par date + heure de RDV.")
         with st.spinner("Géocodage, trajets, pauses, départs conseillés..."):
             route_df, return_row, start_geo = enrich_route(df, start_address, int(safety_min), int(visit_min), use_google, google_key)
         st.session_state["route_df"] = route_df
@@ -615,8 +667,10 @@ start_geo = st.session_state.get("start_geo", {})
 google_key = st.session_state.get("google_key", "")
 use_google = st.session_state.get("use_google", False)
 
-total_km = pd.to_numeric(route_df.get("distance_depuis_precedent_km"), errors="coerce").fillna(0).sum() + (return_row.get("distance_depuis_precedent_km", 0) if return_row else 0)
-total_min = pd.to_numeric(route_df.get("temps_route_depuis_precedent_min"), errors="coerce").fillna(0).sum() + (return_row.get("temps_route_depuis_precedent_min", 0) if return_row and isinstance(return_row.get("temps_route_depuis_precedent_min"), int) else 0)
+distance_series = pd.to_numeric(route_df.get("distance_depuis_precedent_km"), errors="coerce").fillna(0)
+time_series = pd.to_numeric(route_df.get("temps_route_depuis_precedent_min"), errors="coerce").fillna(0)
+total_km = float(distance_series.sum()) + (to_float(return_row.get("distance_depuis_precedent_km", 0)) if return_row else 0.0)
+total_min = int(time_series.sum()) + (to_minutes(return_row.get("temps_route_depuis_precedent_min", 0)) if return_row else 0)
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("RDV", len(route_df))

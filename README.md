@@ -1,8 +1,8 @@
-# Routage PRO V10 — terrain Froid24
+# Routage PRO V11 — terrain Froid24
 
 Version terrain optimisée iPhone / Windows Surface.
 
-## Nouveautés V10
+## Nouveautés V11
 
 - Ordre strict par heure de RDV, pas d’optimisation automatique.
 - Durée RDV par défaut : 2h30.
@@ -19,3 +19,9 @@ Version terrain optimisée iPhone / Windows Surface.
 ## Format Excel attendu
 
 A numéro RDV · B adresse · C code postal · D date RDV · E heure RDV · J/N nom/prénom · Q téléphone · R ville.
+
+
+## V11
+- Correction du bug `numpy UFuncNoLoopError` au total km.
+- Rechargement automatique du dernier Excel importé pendant la journée/session Streamlit.
+- Si Streamlit redémarre complètement, réimporte simplement le fichier ou le CSV/PDF sauvegardé.
