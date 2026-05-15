@@ -20,7 +20,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V12", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V13", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -32,8 +32,21 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V12 — terrain iPhone / Surface")
-st.caption("Ordre par heure de RDV · retour base · pauses · départ conseillé · PDF enrichi · Waze / Maps / appel")
+st.title("🚗 Routage PRO V13 — terrain iPhone / Surface")
+st.caption("Mode sombre · calcul automatique · route réelle OSRM · retour base · pauses · départ conseillé · PDF enrichi")
+
+st.markdown("""
+<style>
+.stApp { background:#050505; color:#f5f5f5; }
+[data-testid="stSidebar"] { background:#0f1115; }
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color:#ffffff !important; }
+.block-container { padding-top: 2rem; }
+.stAlert { border-radius:14px; }
+div[data-testid="stDataFrame"] { border-radius:14px; overflow:hidden; }
+.stButton button, .stDownloadButton button, .stLinkButton a { border-radius:14px !important; font-weight:700 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 
 
 def safe_get(row, idx):
@@ -162,13 +175,46 @@ def fmt_duration(m):
 
 
 @st.cache_data(show_spinner=False)
+def geocode_one(address):
+    """Géocodage robuste pour la France : API adresse.data.gouv.fr puis Nominatim."""
+    if not address:
+        return {"lat": None, "lon": None, "source": "vide"}
+    q = str(address).strip()
+    # 1) API officielle française, très fiable avec adresse + CP + ville
+    try:
+        r = requests.get(
+            "https://api-adresse.data.gouv.fr/search/",
+            params={"q": q, "limit": 1, "autocomplete": 0},
+            timeout=8,
+        )
+        data = r.json()
+        feats = data.get("features", [])
+        if feats:
+            lon, lat = feats[0].get("geometry", {}).get("coordinates", [None, None])
+            if lat and lon:
+                return {"lat": float(lat), "lon": float(lon), "source": "adresse.data.gouv.fr"}
+    except Exception:
+        pass
+    # 2) Fallback Nominatim
+    try:
+        geolocator = Nominatim(user_agent="routage_pro_v13_froid24")
+        loc = geolocator.geocode(q + ", France", timeout=8)
+        if loc:
+            return {"lat": loc.latitude, "lon": loc.longitude, "source": "Nominatim"}
+    except Exception:
+        pass
+    return {"lat": None, "lon": None, "source": "non trouvé"}
+
+
+@st.cache_data(show_spinner=False)
 def geocode_addresses(addresses):
-    geolocator = Nominatim(user_agent="routage_pro_v10_froid24")
-    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=1, swallow_exceptions=True)
     out = {}
-    for address in addresses:
-        loc = geocode(address + ", France")
-        out[address] = {"lat": loc.latitude, "lon": loc.longitude} if loc else {"lat": None, "lon": None}
+    seen = []
+    for a in addresses:
+        if a and a not in seen:
+            seen.append(a)
+    for address in seen:
+        out[address] = geocode_one(address)
     return out
 
 
@@ -321,7 +367,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
 
         r = row.to_dict()
         r.update({
-            "lat": coord.get("lat"), "lon": coord.get("lon"),
+            "lat": coord.get("lat"), "lon": coord.get("lon"), "source_geocodage": coord.get("source", ""),
             "distance_depuis_precedent_km": round(km, 1) if km is not None else "",
             "temps_route_depuis_precedent_min": drive_min if drive_min is not None else "",
             "source_temps": rb.get("source", ""),
@@ -383,7 +429,7 @@ def make_map(df, return_row, start_address, start_geo):
         center = [start_geo["lat"], start_geo["lon"]]
     else:
         center = [48.79, 2.53]
-    m = folium.Map(location=center, zoom_start=11, tiles="OpenStreetMap")
+    m = folium.Map(location=center, zoom_start=11, tiles="CartoDB dark_matter")
     points = []
     if start_geo.get("lat") and start_geo.get("lon"):
         folium.Marker([start_geo["lat"], start_geo["lon"]], tooltip="Départ / retour", popup=start_address, icon=folium.Icon(color="green", icon="home")).add_to(m)
@@ -394,7 +440,7 @@ def make_map(df, return_row, start_address, start_geo):
         time_label = fmt_time(r.get("heure_rdv"))
         label = f"{r.get('numero_rdv','')} - {r.get('nom_prospect','')} - {time_label}"
         html = f"""
-        <div style='font-size:20px;line-height:23px;font-weight:900;background:#ffea00;color:#111;border:3px solid #000;border-radius:10px;padding:7px 10px;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.55);'>
+        <div style='font-size:20px;line-height:23px;font-weight:900;background:#ff8c00;color:#000;border:3px solid #fff;border-radius:10px;padding:7px 10px;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.55);'>
         #{r.get('numero_rdv','')} · {r.get('nom_prospect','')}<br>🕒 {time_label}
         </div>"""
         folium.Marker([r["lat"], r["lon"]], tooltip=label, popup=folium.Popup(label, max_width=380), icon=folium.Icon(color="blue", icon="user")).add_to(m)
@@ -414,8 +460,8 @@ def make_map(df, return_row, start_address, start_geo):
         if isinstance(geom, list) and len(geom) >= 2:
             folium.PolyLine(geom, weight=5, opacity=0.9, color="red", dash_array="8,6").add_to(m)
             route_drawn = True
-    if not route_drawn and len(points) >= 2:
-        folium.PolyLine(points, weight=4, opacity=0.8, color="red").add_to(m)
+    # Pas de ligne droite de secours : on évite l'effet "avion".
+    # Si aucune géométrie routière n'est disponible, les marqueurs restent visibles sans faux tracé.
     return m
 
 
@@ -448,7 +494,7 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
     total_min = int(pd.to_numeric(df.get("temps_route_depuis_precedent_min", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
     total_min += to_minutes(return_row.get("temps_route_depuis_precedent_min", 0) if return_row else 0)
 
-    story.append(Paragraph("Tournée terrain — Routage PRO V12", title))
+    story.append(Paragraph("Tournée terrain — Routage PRO V13", title))
     story.append(Paragraph(f"Départ / retour : {start_address}", normal))
     story.append(Paragraph(f"RDV : {len(df)} · Distance totale retour inclus : {total_km:.1f} km · Temps route : {fmt_duration(total_min)}", normal))
     story.append(Spacer(1, 0.2*cm))
@@ -613,7 +659,7 @@ with st.sidebar:
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
     auto_reload = st.checkbox("Recharger automatiquement le dernier Excel de la journée", value=True)
-    st.info("V12 : correctif PDF total km + fil conducteur visible + dernier fichier auto + colonnes fixes.")
+    st.info("V13 : mode sombre + calcul automatique + géocodage France renforcé + tracé route réelle OSRM + dernier Excel auto.")
 
 source_file = None
 source_label = ""
@@ -630,7 +676,7 @@ if source_file:
         if df.empty:
             st.error("Aucune adresse trouvée dans le fichier.")
             st.stop()
-        st.success(f"{len(df)} RDV chargés depuis {source_label}. Ordre imposé par date + heure de RDV.")
+        st.success(f"{len(df)} RDV chargés depuis {source_label}. Calcul automatique lancé, aucun bouton à cliquer.")
         with st.spinner("Géocodage, trajets, pauses, départs conseillés..."):
             route_df, return_row, start_geo = enrich_route(df, start_address, int(safety_min), int(visit_min), use_google, google_key)
         st.session_state["route_df"] = route_df
@@ -728,6 +774,13 @@ for _, r in route_df.iterrows():
                 st.link_button("📞 Appeler", f"tel:{r.get('telephone_tel')}", use_container_width=True)
 
 st.subheader("🗺️ Carte générale")
+nb_routes = sum(1 for _, rr in route_df.iterrows() if isinstance(rr.get("route_geometry", []), list) and len(rr.get("route_geometry", [])) >= 2)
+if return_row and isinstance(return_row.get("route_geometry", []), list) and len(return_row.get("route_geometry", [])) >= 2:
+    nb_routes += 1
+if nb_routes == 0:
+    st.warning("Aucun tracé routier disponible pour l’instant. Vérifie la connexion ou les adresses. Les calculs peuvent quand même apparaître si les coordonnées sont trouvées.")
+else:
+    st.success(f"{nb_routes} trajet(s) routier(s) tracé(s) sur la carte.")
 try:
     st_folium(make_map(route_df, return_row, start_address, start_geo), height=650, use_container_width=True)
 except Exception as e:
@@ -740,8 +793,8 @@ csv_bytes = to_recap_csv(route_df, return_row)
 
 c1, c2 = st.columns(2)
 with c1:
-    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v12.pdf", mime="application/pdf", use_container_width=True)
+    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v13.pdf", mime="application/pdf", use_container_width=True)
 with c2:
-    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v12.csv", mime="text/csv", use_container_width=True)
+    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v13.csv", mime="text/csv", use_container_width=True)
 
-st.caption("Sans clé Google, le trafic est une estimation prudente. Avec une clé Google Maps API, l'app peut utiliser les durées trafic Google et intégrer des images Street View dans le PDF.")
+st.caption("V13 : calcul automatique après import. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
