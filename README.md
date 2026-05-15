@@ -1,14 +1,10 @@
-# Routage PRO V14
+# Routage PRO V15
 
 Version complète.
 
-- Mode sombre général lisible
-- Carte en mode jour OpenStreetMap
-- Calcul automatique après import
-- Route réelle via OSRM quand disponible
-- Retour base inclus
-- Départ conseillé, pauses, fil conducteur terrain
-- Export PDF/CSV
-
-## Déploiement
-Uploader `app.py`, `requirements.txt`, `README.md` dans GitHub puis attendre la mise à jour Streamlit.
+Corrections V15 :
+- bannières/accordéons du mode terrain lisibles sur PC ;
+- suppression du bandeau blanc en haut ;
+- liens Waze basés sur l'adresse complète pour conserver le numéro de rue ;
+- carte conservée en mode jour ;
+- calculs et fonctions V14 conservés.

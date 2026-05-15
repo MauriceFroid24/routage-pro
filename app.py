@@ -20,7 +20,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V14", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V15", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -32,7 +32,7 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V14 — terrain iPhone / Surface")
+st.title("🚗 Routage PRO V15 — terrain iPhone / Surface")
 st.caption("Mode sombre lisible · carte claire · calcul automatique · route réelle OSRM · retour base · pauses · départ conseillé")
 
 st.markdown("""
@@ -83,6 +83,53 @@ div[data-testid="stDataFrame"] {
 hr {
     border-color:#333333 !important;
 }
+
+/* V15 — corrections PC : bandeau haut + expanders blancs sur blanc */
+[data-testid="stHeader"] {
+    background: #050505 !important;
+    color: #ffffff !important;
+    border-bottom: 1px solid #1f1f1f !important;
+}
+[data-testid="stToolbar"] {
+    background: transparent !important;
+}
+[data-testid="stDecoration"] {
+    background: #050505 !important;
+}
+[data-testid="stExpander"] {
+    background-color: #121212 !important;
+    border: 1px solid #3a3a3a !important;
+    border-radius: 14px !important;
+    overflow: hidden !important;
+    margin-bottom: 10px !important;
+}
+[data-testid="stExpander"] details {
+    background-color: #121212 !important;
+    color: #ffffff !important;
+}
+[data-testid="stExpander"] summary {
+    background-color: #1f2937 !important;
+    color: #ffffff !important;
+    font-weight: 900 !important;
+    font-size: 1.02rem !important;
+}
+[data-testid="stExpander"] summary * {
+    color: #ffffff !important;
+}
+[data-testid="stExpander"] div,
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] span {
+    color: #ffffff !important;
+}
+[data-testid="stExpander"] svg {
+    fill: #ffffff !important;
+    color: #ffffff !important;
+}
+/* Force les textes Streamlit à rester lisibles sur PC */
+.stMarkdown, .stMarkdown p, .stMarkdown span, label, div[data-testid="stText"] {
+    color: #f5f5f5 !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -166,9 +213,15 @@ def build_address(adresse, cp, ville):
 
 
 def waze_link(lat, lon, address):
+    # Pour Waze, on privilégie toujours l'adresse complète plutôt que les coordonnées.
+    # Les coordonnées issues du géocodage peuvent parfois pointer seulement la rue,
+    # alors que l'adresse encodée conserve mieux le numéro de rue dans l'application.
+    clean_address = str(address or "").strip()
+    if clean_address:
+        return f"https://www.waze.com/ul?q={quote_plus(clean_address)}&navigate=yes"
     if lat and lon:
-        return f"https://waze.com/ul?ll={lat},{lon}&navigate=yes"
-    return f"https://waze.com/ul?q={quote_plus(address)}&navigate=yes"
+        return f"https://www.waze.com/ul?ll={lat},{lon}&navigate=yes"
+    return "https://www.waze.com/"
 
 
 def maps_link(address):
