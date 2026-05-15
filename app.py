@@ -20,7 +20,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V11", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V12", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -32,7 +32,7 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V11 — terrain iPhone / Surface")
+st.title("🚗 Routage PRO V12 — terrain iPhone / Surface")
 st.caption("Ordre par heure de RDV · retour base · pauses · départ conseillé · PDF enrichi · Waze / Maps / appel")
 
 
@@ -442,10 +442,13 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
     normal = ParagraphStyle('NormalCustom', parent=styles['Normal'], fontSize=9, leading=11)
     story = []
 
-    total_km = pd.to_numeric(df["distance_depuis_precedent_km"], errors="coerce").fillna(0).sum() + (return_row.get("distance_depuis_precedent_km", 0) if return_row else 0)
-    total_min = pd.to_numeric(df["temps_route_depuis_precedent_min"], errors="coerce").fillna(0).sum() + (return_row.get("temps_route_depuis_precedent_min", 0) if return_row and isinstance(return_row.get("temps_route_depuis_precedent_min"), int) else 0)
+    # Totaux robustes : évite les erreurs numpy quand le retour base est stocké en texte/objet.
+    total_km = float(pd.to_numeric(df.get("distance_depuis_precedent_km", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    total_km += to_float(return_row.get("distance_depuis_precedent_km", 0) if return_row else 0)
+    total_min = int(pd.to_numeric(df.get("temps_route_depuis_precedent_min", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+    total_min += to_minutes(return_row.get("temps_route_depuis_precedent_min", 0) if return_row else 0)
 
-    story.append(Paragraph("Tournée terrain — Routage PRO V11", title))
+    story.append(Paragraph("Tournée terrain — Routage PRO V12", title))
     story.append(Paragraph(f"Départ / retour : {start_address}", normal))
     story.append(Paragraph(f"RDV : {len(df)} · Distance totale retour inclus : {total_km:.1f} km · Temps route : {fmt_duration(total_min)}", normal))
     story.append(Spacer(1, 0.2*cm))
@@ -465,7 +468,7 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
         if r.get('telephone_tel'):
             links += f"<br/><a href='tel:{r['telephone_tel']}'>Appeler</a>"
         pause = r.get("pause_avant_rdv_min", "")
-        pause_txt = "" if pause == "" else (f"{pause} min" if int(pause) >= 0 else f"⚠ retard {abs(int(pause))} min")
+        pause_txt = "" if pause == "" else (fmt_duration(pause) if to_minutes(pause) >= 0 else f"⚠ retard {fmt_duration(abs(to_minutes(pause)))}")
         data.append([
             str(r.get('numero_rdv','')),
             Paragraph(f"{fmt_date(r.get('date_rdv'))}<br/><b>{fmt_time(r.get('heure_rdv'))}</b>", small),
@@ -610,7 +613,7 @@ with st.sidebar:
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
     auto_reload = st.checkbox("Recharger automatiquement le dernier Excel de la journée", value=True)
-    st.info("V11 : correction erreur total km + dernier fichier auto + colonnes fixes + PDF terrain.")
+    st.info("V12 : correctif PDF total km + fil conducteur visible + dernier fichier auto + colonnes fixes.")
 
 source_file = None
 source_label = ""
@@ -679,6 +682,10 @@ col3.metric("Temps route", fmt_duration(total_min))
 if not route_df.empty:
     first_dep = route_df.iloc[0].get("depart_conseille")
     col4.metric("Premier départ conseillé", fmt_dt(first_dep))
+    if fmt_dt(first_dep):
+        st.success(f"Départ conseillé de la base : {fmt_dt(first_dep)}")
+    else:
+        st.warning("Départ conseillé non calculé : vérifie que chaque RDV a bien une date et une heure dans les colonnes D et E.")
 
 st.subheader("🧭 Fil conducteur terrain")
 timeline_df = pd.DataFrame(build_timeline(route_df, return_row, start_address, int(visit_min)))
@@ -704,7 +711,7 @@ if return_row:
 st.subheader("📋 Mode terrain")
 for _, r in route_df.iterrows():
     pause = r.get('pause_avant_rdv_min', '')
-    pause_txt = "" if pause == "" else (f" · Pause dispo : {fmt_duration(pause)}" if int(pause) >= 0 else f" · ⚠ Retard probable : {fmt_duration(abs(int(pause)))}")
+    pause_txt = "" if pause == "" else (f" · Pause dispo : {fmt_duration(pause)}" if to_minutes(pause) >= 0 else f" · ⚠ Retard probable : {fmt_duration(abs(to_minutes(pause)))}")
     title = f"RDV {r.get('numero_rdv','')} · {fmt_time(r.get('heure_rdv'))} · {r.get('nom_prospect','')}{pause_txt}"
     with st.expander(title, expanded=(str(r.get('ordre','')) == '1')):
         c1, c2 = st.columns([2, 1])
@@ -733,8 +740,8 @@ csv_bytes = to_recap_csv(route_df, return_row)
 
 c1, c2 = st.columns(2)
 with c1:
-    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v10.pdf", mime="application/pdf", use_container_width=True)
+    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v12.pdf", mime="application/pdf", use_container_width=True)
 with c2:
-    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v10.csv", mime="text/csv", use_container_width=True)
+    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v12.csv", mime="text/csv", use_container_width=True)
 
 st.caption("Sans clé Google, le trafic est une estimation prudente. Avec une clé Google Maps API, l'app peut utiliser les durées trafic Google et intégrer des images Street View dans le PDF.")
