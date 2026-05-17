@@ -402,8 +402,42 @@ def prepare_dataframe(file):
         result["sort_date"] = result["date_rdv"].apply(lambda x: x or date.max)
         result["sort_time"] = result["heure_rdv"].apply(lambda x: x or dtime.max)
         result = result.sort_values(["sort_date", "sort_time", "numero_rdv"]).drop(columns=["sort_date", "sort_time"]).reset_index(drop=True)
+        # Conservation du numéro RDV original + renumérotation terrain dans l’ordre chronologique
+        if "numero_rdv_source" not in result.columns:
+            result["numero_rdv_source"] = result["numero_rdv"]
+        result["numero_rdv"] = range(1, len(result) + 1)
         result.insert(0, "ordre", range(1, len(result) + 1))
     return result
+
+
+def renumber_route_df(df):
+    """Force la numérotation terrain 1, 2, 3... dans l'ordre chronologique réel."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    # Garde le numéro d'origine du fichier si présent, mais n'utilise plus ce numéro pour l'affichage terrain.
+    if "numero_rdv_source" not in out.columns and "numero_rdv" in out.columns:
+        out["numero_rdv_source"] = out["numero_rdv"]
+    # Tri le plus fiable possible : date/heure RDV puis ordre existant si disponible.
+    sort_cols = []
+    if "rdv_datetime" in out.columns:
+        out["__sort_dt"] = pd.to_datetime(out["rdv_datetime"], errors="coerce")
+        sort_cols.append("__sort_dt")
+    if "date_rdv" in out.columns:
+        out["__sort_date"] = pd.to_datetime(out["date_rdv"], errors="coerce")
+        sort_cols.append("__sort_date")
+    if "heure_rdv" in out.columns:
+        out["__sort_time"] = out["heure_rdv"].apply(lambda x: fmt_time(x) if pd.notna(x) else "99:99")
+        sort_cols.append("__sort_time")
+    if "ordre" in out.columns:
+        out["__sort_ordre"] = pd.to_numeric(out["ordre"], errors="coerce").fillna(999999)
+        sort_cols.append("__sort_ordre")
+    if sort_cols:
+        out = out.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+    out["numero_rdv"] = list(range(1, len(out) + 1))
+    out["ordre"] = list(range(1, len(out) + 1))
+    out = out.drop(columns=[c for c in out.columns if c.startswith("__sort_")], errors="ignore")
+    return out
 
 
 def route_between(prev_addr, prev_geo, addr, coord, arrival_dt, api_key, use_google):
@@ -480,7 +514,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
         prev_addr = addr
         prev_geo = coord
 
-    route_df = pd.DataFrame(out)
+    route_df = renumber_route_df(pd.DataFrame(out))
 
     # Retour base après le dernier RDV
     return_row = None
@@ -654,14 +688,20 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
 
 
 def to_recap_csv(df, return_row):
-    export = df.copy()
+    export = renumber_route_df(df.copy())
+    cols = ["ordre", "numero_rdv", "numero_rdv_source", "date_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "teleprospecteur", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "source_temps", "waze", "google_maps", "street_view", "lien_appel"]
+    # Sécurité : si une ancienne tournée sauvegardée ne contient pas toutes les colonnes, on les recrée vides au lieu de planter.
+    for c in cols:
+        if c not in export.columns:
+            export[c] = ""
     export["date_rdv"] = export["date_rdv"].apply(fmt_date)
     export["heure_rdv"] = export["heure_rdv"].apply(fmt_time)
     export["depart_conseille"] = export["depart_conseille"].apply(fmt_dt)
-    export["lien_appel"] = export["telephone_tel"].apply(lambda x: f"tel:{x}" if x else "")
-    cols = ["ordre", "numero_rdv", "numero_rdv_source", "date_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "teleprospecteur", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "source_temps", "waze", "google_maps", "street_view", "lien_appel"]
+    if "telephone_tel" in export.columns:
+        export["lien_appel"] = export["telephone_tel"].apply(lambda x: f"tel:{x}" if x else "")
     if return_row:
-        export = pd.concat([export[cols], pd.DataFrame([{c: return_row.get(c, "") for c in cols}])], ignore_index=True)
+        row = {c: return_row.get(c, "") for c in cols}
+        export = pd.concat([export[cols], pd.DataFrame([row])], ignore_index=True)
     return export[cols].to_csv(index=False, sep=";").encode("utf-8-sig")
 
 
@@ -783,7 +823,7 @@ if source_file:
         st.stop()
 elif saved:
     try:
-        route_df = pd.read_csv(saved, sep=";")
+        route_df = renumber_route_df(pd.read_csv(saved, sep=";"))
         st.session_state["route_df"] = route_df
         st.session_state["return_row"] = None
         st.session_state["start_address"] = start_address
@@ -802,7 +842,8 @@ A numéro RDV · B adresse · C code postal · D date RDV · E heure RDV · J/N 
 """)
     st.stop()
 
-route_df = st.session_state["route_df"]
+route_df = renumber_route_df(st.session_state["route_df"])
+st.session_state["route_df"] = route_df
 return_row = st.session_state.get("return_row")
 start_address = st.session_state.get("start_address", DEFAULT_START)
 start_geo = st.session_state.get("start_geo", {})
