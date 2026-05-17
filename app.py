@@ -379,6 +379,7 @@ def prepare_dataframe(file):
         d = parse_date(row.iloc[COLS["date_rdv"]] if len(row) > COLS["date_rdv"] else "")
         h = parse_time(row.iloc[COLS["heure_debut"]] if len(row) > COLS["heure_debut"] else "")
         phone_fmt, phone_digits = format_phone(safe_get(row, COLS["telephone"]))
+        telepros_full = full_name(safe_get(row, COLS["telepros_prenom"]), safe_get(row, COLS["telepros_nom"]))
         rows.append({
             "numero_rdv": safe_get(row, COLS["numero_rdv"]),
             "nom_prospect": full_name(safe_get(row, COLS["prenom"]), safe_get(row, COLS["nom"])),
