@@ -29,7 +29,7 @@ LAST_UPLOAD_PATH = Path("/tmp/routage_pro_dernier_fichier.xlsx")
 COLS = {
     "numero_rdv": 0, "adresse": 1, "code_postal": 2, "date_rdv": 3, "heure_debut": 4,
     "email": 5, "fournisseur": 7, "commercial_nom": 8, "nom": 9, "telepros_nom": 11,
-    "commercial_prenom": 12, "prenom": 13, "telephone": 16, "ville": 17,
+    "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
 st.title("🚗 Routage PRO V15 — terrain iPhone / Surface")
@@ -394,7 +394,7 @@ def prepare_dataframe(file):
             "email": safe_get(row, COLS["email"]),
             "fournisseur": safe_get(row, COLS["fournisseur"]),
             "commercial": full_name(safe_get(row, COLS["commercial_prenom"]), safe_get(row, COLS["commercial_nom"])),
-            "teleprospecteur": safe_get(row, COLS["telepros_nom"]),
+            "teleprospecteur": telepros_full,
         })
     result = pd.DataFrame(rows)
     if not result.empty:
@@ -610,7 +610,7 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
         data.append([
             str(r.get('numero_rdv','')),
             Paragraph(f"{fmt_date(r.get('date_rdv'))}<br/><b>{fmt_time(r.get('heure_rdv'))}</b>", small),
-            Paragraph(f"<b>{r.get('nom_prospect','')}</b><br/>{r.get('telephone','')}", small),
+            Paragraph(f"<b>{r.get('nom_prospect','')}</b><br/>{r.get('telephone','')}<br/>Télépro : {r.get('teleprospecteur','')}", small),
             Paragraph(r.get('adresse_complete',''), small),
             Paragraph(f"{r.get('distance_depuis_precedent_km','')} km<br/>{fmt_duration(r.get('temps_route_depuis_precedent_min',''))}<br/>{r.get('note_trafic','')}", small),
             Paragraph(fmt_dt(r.get('depart_conseille')), small),
@@ -631,7 +631,7 @@ def create_pdf(df, return_row, start_address, include_photos, google_key, visit_
     story.append(Paragraph("Fiches prospects", title))
     for _, r in df.iterrows():
         story.append(Paragraph(f"#{r.get('numero_rdv','')} — {r.get('nom_prospect','')} — {fmt_time(r.get('heure_rdv'))}", h2))
-        info = f"<b>Adresse :</b> {r.get('adresse_complete','')}<br/><b>Téléphone :</b> {r.get('telephone','')}<br/><b>Départ conseillé :</b> {fmt_dt(r.get('depart_conseille'))}<br/><b>Trajet :</b> {r.get('distance_depuis_precedent_km','')} km · {fmt_duration(r.get('temps_route_depuis_precedent_min',''))}<br/><a href='{r.get('waze','#')}'>Ouvrir Waze</a> · <a href='{r.get('google_maps','#')}'>Google Maps</a> · <a href='{r.get('street_view','#')}'>Voir maison</a>"
+        info = f"<b>Adresse :</b> {r.get('adresse_complete','')}<br/><b>Téléphone :</b> {r.get('telephone','')}<br/><b>Téléprospecteur :</b> {r.get('teleprospecteur','')}<br/><b>Départ conseillé :</b> {fmt_dt(r.get('depart_conseille'))}<br/><b>Trajet :</b> {r.get('distance_depuis_precedent_km','')} km · {fmt_duration(r.get('temps_route_depuis_precedent_min',''))}<br/><a href='{r.get('waze','#')}'>Ouvrir Waze</a> · <a href='{r.get('google_maps','#')}'>Google Maps</a> · <a href='{r.get('street_view','#')}'>Voir maison</a>"
         if r.get('telephone_tel'):
             info += f" · <a href='tel:{r.get('telephone_tel')}'>Appeler</a>"
         story.append(Paragraph(info, normal))
@@ -658,7 +658,7 @@ def to_recap_csv(df, return_row):
     export["heure_rdv"] = export["heure_rdv"].apply(fmt_time)
     export["depart_conseille"] = export["depart_conseille"].apply(fmt_dt)
     export["lien_appel"] = export["telephone_tel"].apply(lambda x: f"tel:{x}" if x else "")
-    cols = ["ordre", "numero_rdv", "date_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "source_temps", "waze", "google_maps", "street_view", "lien_appel"]
+    cols = ["ordre", "numero_rdv", "numero_rdv_source", "date_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "teleprospecteur", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "source_temps", "waze", "google_maps", "street_view", "lien_appel"]
     if return_row:
         export = pd.concat([export[cols], pd.DataFrame([{c: return_row.get(c, "") for c in cols}])], ignore_index=True)
     return export[cols].to_csv(index=False, sep=";").encode("utf-8-sig")
@@ -830,7 +830,7 @@ timeline_df = pd.DataFrame(build_timeline(route_df, return_row, start_address, i
 st.dataframe(timeline_df, use_container_width=True, hide_index=True)
 
 st.subheader("📊 Détail des trajets étape par étape")
-show_cols = ["numero_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "note_trafic"]
+show_cols = ["numero_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "teleprospecteur", "telephone", "adresse_complete", "distance_depuis_precedent_km", "temps_route_depuis_precedent_min", "note_trafic"]
 display_df = route_df[show_cols].copy()
 display_df["heure_rdv"] = display_df["heure_rdv"].apply(fmt_time)
 display_df["depart_conseille"] = display_df["depart_conseille"].apply(fmt_dt)
@@ -838,7 +838,7 @@ display_df["pause_avant_rdv_min"] = display_df["pause_avant_rdv_min"].apply(lamb
 display_df["temps_route_depuis_precedent_min"] = display_df["temps_route_depuis_precedent_min"].apply(fmt_duration)
 display_df = display_df.rename(columns={
     "numero_rdv": "N° RDV", "heure_rdv": "Heure RDV", "depart_conseille": "Départ conseillé",
-    "pause_avant_rdv_min": "Pause avant RDV", "nom_prospect": "Client", "telephone": "Téléphone",
+    "pause_avant_rdv_min": "Pause avant RDV", "nom_prospect": "Client", "teleprospecteur": "Téléprospecteur", "telephone": "Téléphone",
     "adresse_complete": "Adresse", "distance_depuis_precedent_km": "Km depuis précédent",
     "temps_route_depuis_precedent_min": "Temps depuis précédent", "note_trafic": "Calcul"
 })
