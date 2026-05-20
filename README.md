@@ -1,7 +1,12 @@
-# Routage PRO V21
+# Routage PRO V22
 
-Version complète basée sur V20.3 avec :
-- rappels enrichis avec département et note visible ;
-- bouton WhatsApp dans les rappels, la recherche et les fiches RDV ;
-- message WhatsApp prérempli compatible iPhone / Surface ;
-- conservation des correctifs V20.3.
+Version basée sur la V21.2 stable.
+
+Ajout principal : module Préparation IA RDV.
+
+Fonctions :
+- coller le détail CRM d'un RDV ;
+- génération de conseils terrain / closing ;
+- sauvegarde avec la fiche CRM ;
+- bouton WhatsApp pour envoyer la préparation ;
+- conservation des fonctions V21.2 : rappels intelligents, IK, carte, Waze, PDF, recherche globale.

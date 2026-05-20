@@ -21,7 +21,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V21.2", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V22", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -54,8 +54,8 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V21.2 — terrain + IK + CRM + rappels intelligents")
-st.caption("Mode sombre lisible · carte claire · IK paramétrable · CRM persistant · rappels intelligents · WhatsApp")
+st.title("🚗 Routage PRO V22 — terrain + IK + CRM + rappels + préparation RDV")
+st.caption("Mode sombre · carte claire · IK · CRM persistant · rappels intelligents · WhatsApp · préparation RDV")
 
 st.markdown("""
 <style>
@@ -322,6 +322,100 @@ def whatsapp_report_link(client="", departement="", statut="", commentaire="", r
         lines += ["", f"Rappel : {rappel_date or ''} {rappel_heure or ''}".strip()]
     lines += ["", "- Mr Dahan"]
     msg = "\n".join(lines)
+    return "https://wa.me/?text=" + quote_plus(msg)
+
+
+
+def analyse_crm_details(details_text):
+    """Analyse locale et robuste des infos copiées depuis le CRM.
+    Objectif : donner une préparation terrain utile sans dépendre d'une API externe.
+    """
+    raw = str(details_text or "").strip()
+    t = raw.lower()
+    if not raw:
+        return ""
+
+    points = []
+    objections = []
+    strategie = []
+    questions = []
+    vigilance = []
+
+    def has(*words):
+        return any(w in t for w in words)
+
+    if has("retrait", "retraite", "retraité", "retraitée"):
+        points.append("Profil retraité : privilégier un discours rassurant, simple, concret et non agressif.")
+        strategie.append("Insister sur le confort quotidien, la tranquillité, la prise en charge administrative et l'accompagnement.")
+        objections.append("Peur des travaux, peur d'un crédit long, méfiance face aux démarches.")
+    if has("mari", "marié", "mariée", "épouse", "epouse", "conjoint", "conjointe"):
+        points.append("Décision probablement à deux : identifier rapidement qui décide réellement.")
+        questions.append("Est-ce que vous prenez la décision ensemble ou l'un de vous valide principalement le projet ?")
+    if has("bois", "cheminée", "cheminee", "poêle", "poele", "insert"):
+        points.append("Chauffage bois détecté : axe fort sur confort automatique, moins de manutention et chauffage homogène.")
+        strategie.append("Comparer la PAC au bois sur la pénibilité, la régularité de température et la simplicité d'usage.")
+    if has("fioul", "fuel"):
+        points.append("Fioul détecté : fort potentiel économies + remplacement d'une énergie coûteuse et contraignante.")
+        strategie.append("Mettre en avant sortie du fioul, aides, confort et réduction des livraisons/odeurs/maintenance.")
+    if has("gaz"):
+        points.append("Gaz détecté : parler économies, stabilité face aux hausses et solution plus moderne.")
+    if has("électrique", "electrique", "convecteur", "radiateur électrique"):
+        points.append("Chauffage électrique détecté : axe économies et confort si maison adaptée.")
+    if has("rfr", "revenu fiscal", "bleu", "jaune", "modeste", "très modeste", "tres modeste"):
+        points.append("Information revenus/aides présente : vérifier l'éligibilité et annoncer les aides avec prudence.")
+        strategie.append("Présenter le reste à charge seulement après avoir expliqué la valeur du projet et les aides mobilisables.")
+    if has("isolation", "combles", "ite", "iti", "fenêtre", "fenetre", "simple vitrage"):
+        points.append("Sujet isolation présent : vérifier l'état réel sur place, cela peut influencer le discours et l'éligibilité.")
+        questions.append("Qu'est-ce qui a déjà été isolé et en quelle année ?")
+    if has("méfiant", "mefiant", "harcel", "arnaque", "déjà appelé", "deja appelé", "doute"):
+        vigilance.append("Client potentiellement méfiant : éviter le discours trop commercial et montrer des preuves concrètes.")
+        strategie.append("Commencer par rassurer : entreprise, rôle, étapes, aucun engagement immédiat sans explication claire.")
+    if has("devis", "concurrent", "réfléchir", "reflechir"):
+        objections.append("Comparaison ou réflexion probable : préparer un argumentaire valeur, garanties, accompagnement et délais.")
+    if has("urgent", "rapidement", "vite", "panne"):
+        points.append("Urgence possible : mettre en avant réactivité, planning et solution rapide.")
+
+    if not points:
+        points.append("Lire le détail CRM sur place et commencer par une découverte courte : chauffage actuel, inconfort, budget, décisionnaires.")
+    if not strategie:
+        strategie.append("Faire parler le client d'abord, reformuler son problème, puis seulement proposer la solution adaptée.")
+    if not objections:
+        objections.append("Objections probables : prix, méfiance, délai de travaux, besoin de réfléchir.")
+    if not questions:
+        questions.extend([
+            "Qu'est-ce qui vous dérange le plus aujourd'hui dans votre chauffage ?",
+            "Quel serait pour vous le résultat idéal après les travaux ?",
+            "Si le financement et les aides sont cohérents, qu'est-ce qui pourrait vous bloquer ?",
+        ])
+    if not vigilance:
+        vigilance.append("Ne pas annoncer de promesse d'aide ou de montant définitif sans vérification complète.")
+
+    def block(title, items):
+        lines = [title]
+        for it in items[:6]:
+            lines.append(f"- {it}")
+        return "\n".join(lines)
+
+    return "\n\n".join([
+        block("🎯 Points clés à retenir", points),
+        block("🧠 Stratégie de closing conseillée", strategie),
+        block("⚠️ Objections probables", objections),
+        block("❓ Questions à poser sur place", questions),
+        block("🛡️ Vigilance", vigilance),
+    ])
+
+
+def whatsapp_ai_prep_link(client="", departement="", adresse="", details="", analyse=""):
+    msg = f"""Préparation RDV {client}{' (' + departement + ')' if departement else ''}
+Adresse : {adresse}
+
+Infos CRM :
+{str(details or '').strip()}
+
+Conseils terrain :
+{str(analyse or '').strip()}
+
+- Mr Dahan"""
     return "https://wa.me/?text=" + quote_plus(msg)
 
 
@@ -905,7 +999,7 @@ def crm_key(row):
 
 
 def crm_columns():
-    return ["key", "date_rdv", "heure_rdv", "client", "telephone", "telephone_tel", "adresse", "teleprospecteur", "fournisseur", "commercial", "statut", "commentaire", "date_rappel", "heure_rappel", "rappel_traite", "traite_at", "created_at", "updated_at"]
+    return ["key", "date_rdv", "heure_rdv", "client", "telephone", "telephone_tel", "adresse", "teleprospecteur", "fournisseur", "commercial", "statut", "commentaire", "details_crm", "analyse_ia", "date_rappel", "heure_rappel", "rappel_traite", "traite_at", "created_at", "updated_at"]
 
 
 def empty_crm_df():
@@ -926,7 +1020,7 @@ def load_crm_history():
     return empty_crm_df()
 
 
-def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time=None):
+def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time=None, details_crm="", analyse_ia=""):
     hist = load_crm_history()
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     d = row.get("date_rdv", "")
@@ -945,6 +1039,8 @@ def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time
         "commercial": row.get("commercial", ""),
         "statut": statut or "",
         "commentaire": commentaire or "",
+        "details_crm": details_crm or "",
+        "analyse_ia": analyse_ia or "",
         "date_rappel": rappel_date.strftime("%d/%m/%Y") if isinstance(rappel_date, date) else str(rappel_date or ""),
         "heure_rappel": fmt_time(rappel_time) if isinstance(rappel_time, dtime) else str(rappel_time or ""),
         "created_at": now,
@@ -963,6 +1059,12 @@ def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time
         old_time = str(hist.loc[idx[0], "heure_rappel"]) if len(idx) and "heure_rappel" in hist.columns else ""
         old_done = str(hist.loc[idx[0], "rappel_traite"]).lower() if len(idx) and "rappel_traite" in hist.columns else "non"
         old_done_at = str(hist.loc[idx[0], "traite_at"]) if len(idx) and "traite_at" in hist.columns else ""
+        old_details = str(hist.loc[idx[0], "details_crm"]) if len(idx) and "details_crm" in hist.columns else ""
+        old_analyse = str(hist.loc[idx[0], "analyse_ia"]) if len(idx) and "analyse_ia" in hist.columns else ""
+        if not record.get("details_crm") and old_details:
+            record["details_crm"] = old_details
+        if not record.get("analyse_ia") and old_analyse:
+            record["analyse_ia"] = old_analyse
         record["created_at"] = created
         if old_date == record.get("date_rappel", "") and old_time == record.get("heure_rappel", ""):
             record["rappel_traite"] = "oui" if old_done in ["oui", "true", "1", "yes"] else "non"
@@ -1369,7 +1471,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V20.2 : V20.1 stable + correctif affichage CRM auto + recherche globale.")
+    st.info("V22 : V21.2 stable + préparation RDV depuis le détail CRM.")
 
 source_file = None
 source_label = ""
@@ -1594,6 +1696,8 @@ if search_q.strip():
                     "Téléprospecteur": rr.get("teleprospecteur", ""),
                     "Statut": rr.get("statut", ""),
                     "Commentaire": rr.get("commentaire", ""),
+                    "Détails CRM": rr.get("details_crm", ""),
+                    "Analyse IA": rr.get("analyse_ia", ""),
                 })
     if results:
         res_df = pd.DataFrame(results).drop_duplicates()
@@ -1651,6 +1755,8 @@ for _, r in route_df.iterrows():
         previous = crm_hist[crm_hist["key"].astype(str) == key].tail(1) if not crm_hist.empty else pd.DataFrame()
         prev_statut = previous.iloc[0].get("statut", "") if not previous.empty else ""
         prev_comment = previous.iloc[0].get("commentaire", "") if not previous.empty else ""
+        prev_details_crm = previous.iloc[0].get("details_crm", "") if not previous.empty else ""
+        prev_analyse_ia = previous.iloc[0].get("analyse_ia", "") if not previous.empty else ""
         prev_rappel_date = parse_date(previous.iloc[0].get("date_rappel", "")) if not previous.empty else None
         prev_rappel_time = parse_time(previous.iloc[0].get("heure_rappel", "")) if not previous.empty else None
         statuses = ["", "Signé", "Veut réfléchir", "Absent", "Négatif", "À rappeler", "VT à planifier", "À revoir"]
@@ -1660,6 +1766,28 @@ for _, r in route_df.iterrows():
             statut = st.selectbox("Statut fin RDV", statuses, index=sidx, key=f"statut_{abs(hash(key))}")
         with cr2:
             commentaire = st.text_area("Commentaire fin RDV", value=prev_comment, key=f"comment_{abs(hash(key))}", height=80)
+        st.markdown("#### 🧠 Préparation IA du RDV")
+        details_crm = st.text_area(
+            "Coller ici les infos détaillées du CRM (chauffage, RFR, situation, remarques télépro, etc.)",
+            value=prev_details_crm,
+            key=f"detailscrm_{abs(hash(key))}",
+            height=120,
+            placeholder="Ex : Mariés retraités, chauffage bois, RFR..., maison ancienne, hésite sur le financement..."
+        )
+        analyse_ia = analyse_crm_details(details_crm)
+        if analyse_ia:
+            st.markdown("**Conseils terrain générés :**")
+            st.text_area("Analyse / stratégie avant RDV", value=analyse_ia, key=f"analyseia_{abs(hash(key))}", height=220, disabled=True)
+            st.link_button("📤 Envoyer préparation WhatsApp", whatsapp_ai_prep_link(
+                client=r.get('nom_prospect',''),
+                departement=extract_departement(r.get('adresse_complete','')),
+                adresse=r.get('adresse_complete',''),
+                details=details_crm,
+                analyse=analyse_ia
+            ), use_container_width=True)
+        else:
+            analyse_ia = prev_analyse_ia
+
         rappel_date = None
         rappel_time = None
         if statut == "À rappeler":
@@ -1680,10 +1808,10 @@ for _, r in route_df.iterrows():
         ), use_container_width=True)
         # V21 : sauvegarde automatique dès qu'un statut, commentaire ou rappel est saisi.
         if statut or str(commentaire).strip() or rappel_date or rappel_time:
-            save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time)
+            save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time, details_crm, analyse_ia)
             st.caption("💾 Sauvegarde automatique active")
         if st.button("💾 Enregistrer compte rendu", key=f"savecrm_{abs(hash(key))}"):
-            save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time)
+            save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time, details_crm, analyse_ia)
             st.success("Compte rendu enregistré.")
 
 st.subheader("🗺️ Carte générale")
@@ -1829,4 +1957,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("V20.2 : V20.1 stable + correctif affichage auto CRM + recherche globale. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
+st.caption("V22 : V21.2 stable + préparation RDV depuis détail CRM. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
