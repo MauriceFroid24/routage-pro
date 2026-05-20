@@ -1,3 +1,7 @@
-# Routage PRO V20.2
+# Routage PRO V21
 
-Correctif esthétique : titre non coupé sur PC et carte verrouillée par défaut pour faciliter le scroll iPhone.
+Version complète basée sur V20.3 avec :
+- rappels enrichis avec département et note visible ;
+- bouton WhatsApp dans les rappels, la recherche et les fiches RDV ;
+- message WhatsApp prérempli compatible iPhone / Surface ;
+- conservation des correctifs V20.3.

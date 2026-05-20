@@ -21,7 +21,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V20", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V21", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -54,8 +54,8 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V20.2 — terrain + IK + CRM persistant + recherche")
-st.caption("Mode sombre lisible · carte claire · IK paramétrable · sauvegarde auto CRM · rappels · recherche globale")
+st.title("🚗 Routage PRO V21 — terrain + IK + CRM + rappels WhatsApp")
+st.caption("Mode sombre lisible · carte claire · IK paramétrable · CRM persistant · rappels enrichis · WhatsApp")
 
 st.markdown("""
 <style>
@@ -259,6 +259,35 @@ def waze_link(lat, lon, address):
 
 def maps_link(address):
     return f"https://www.google.com/maps/search/?api=1&query={quote_plus(address)}"
+
+
+def extract_departement(text):
+    m = re.search(r"\b(\d{2})\d{3}\b", str(text or ""))
+    if not m:
+        return ""
+    dep = m.group(1)
+    if dep == "97":
+        m2 = re.search(r"\b(97\d)\d{2}\b", str(text or ""))
+        return m2.group(1) if m2 else dep
+    return dep
+
+
+def whatsapp_report_link(client="", departement="", statut="", commentaire="", rappel_date="", rappel_heure="", adresse="", telephone=""):
+    lines = [
+        f"RDV {str(client or '').strip()}" + (f" ({departement})" if departement else ""),
+        "",
+        f"Statut : {statut or ''}",
+        f"Téléphone : {telephone or ''}",
+        f"Adresse : {adresse or ''}",
+        "",
+        "Note :",
+        str(commentaire or '').strip(),
+    ]
+    if rappel_date or rappel_heure:
+        lines += ["", f"Rappel : {rappel_date or ''} {rappel_heure or ''}".strip()]
+    lines += ["", "- Mr Dahan"]
+    msg = "\n".join(lines)
+    return "https://wa.me/?text=" + quote_plus(msg)
 
 
 def streetview_link(lat, lon, address):
@@ -631,6 +660,18 @@ def make_map(df, return_row, start_address, start_geo, interactive=True):
             route_drawn = True
     # Pas de ligne droite de secours : on évite l'effet "avion".
     # Si aucune géométrie routière n'est disponible, les marqueurs restent visibles sans faux tracé.
+
+    # Zoom automatique : afficher toutes les destinations dès l'ouverture de la carte
+    # (base + tous les RDV + retour base) plutôt qu'une simple portion de route.
+    try:
+        if len(points) >= 2:
+            m.fit_bounds(points, padding=(35, 35))
+        elif len(points) == 1:
+            m.location = points[0]
+            m.zoom_start = 13
+    except Exception:
+        pass
+
     return m
 
 
@@ -1365,13 +1406,21 @@ if not crm_df.empty:
         for _, rr in due.head(10).iterrows():
             delay = "🔴 dépassé" if rr["_rappel_dt"] < now_dt else "🟡 à venir"
             with st.container(border=True):
-                st.markdown(f"**{delay} — {rr['client']}** · {rr.get('date_rappel','')} {rr.get('heure_rappel','')}")
-                st.markdown(f"{rr.get('commentaire','')}")
-                cols_rem = st.columns(2)
+                dep = extract_departement(rr.get("adresse", ""))
+                note = str(rr.get("commentaire", "") or "").strip()
+                st.markdown(f"**{delay} — {rr['client']}" + (f" ({dep})" if dep else "") + f"** · {rr.get('date_rappel','')} {rr.get('heure_rappel','')}")
+                if note:
+                    st.markdown(f"📝 {note}")
+                cols_rem = st.columns(3)
                 tel_digits = re.sub(r"\D", "", str(rr.get("telephone", "")))
                 if tel_digits:
                     cols_rem[0].link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
                 cols_rem[1].link_button("🗺️ Adresse", maps_link(rr.get("adresse", "")), use_container_width=True)
+                cols_rem[2].link_button("📤 WhatsApp", whatsapp_report_link(
+                    client=rr.get("client", ""), departement=dep, statut=rr.get("statut", ""),
+                    commentaire=note, rappel_date=rr.get("date_rappel", ""), rappel_heure=rr.get("heure_rappel", ""),
+                    adresse=rr.get("adresse", ""), telephone=rr.get("telephone", "")
+                ), use_container_width=True)
 
 
 # Recherche globale CRM + tournée courante
@@ -1422,10 +1471,15 @@ if search_q.strip():
                 if rr.get("Commentaire"):
                     st.markdown(rr.get("Commentaire"))
                 tel_digits = re.sub(r"\D", "", str(rr.get("Téléphone", "")))
-                c_a, c_b = st.columns(2)
+                c_a, c_b, c_c = st.columns(3)
                 if tel_digits:
                     c_a.link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
                 c_b.link_button("🗺️ Adresse", maps_link(rr.get("Adresse", "")), use_container_width=True)
+                dep = extract_departement(rr.get("Adresse", ""))
+                c_c.link_button("📤 WhatsApp", whatsapp_report_link(
+                    client=rr.get("Client", ""), departement=dep, statut=rr.get("Statut", ""),
+                    commentaire=rr.get("Commentaire", ""), adresse=rr.get("Adresse", ""), telephone=rr.get("Téléphone", "")
+                ), use_container_width=True)
     else:
         st.info("Aucun résultat trouvé.")
 
@@ -1448,6 +1502,15 @@ for _, r in route_df.iterrows():
             st.link_button("🏠 Voir maison", r.get('street_view', '#'), use_container_width=True)
             if r.get('telephone_tel'):
                 st.link_button("📞 Appeler", f"tel:{r.get('telephone_tel')}", use_container_width=True)
+            # Bouton WhatsApp : préremplit un compte rendu à envoyer manuellement au groupe.
+            st.link_button("📤 WhatsApp", whatsapp_report_link(
+                client=r.get('nom_prospect',''),
+                departement=extract_departement(r.get('adresse_complete','')),
+                statut='',
+                commentaire='',
+                adresse=r.get('adresse_complete',''),
+                telephone=r.get('telephone','')
+            ), use_container_width=True)
         st.divider()
         key = crm_key(r)
         crm_hist = load_crm_history()
@@ -1471,7 +1534,17 @@ for _, r in route_df.iterrows():
                 rappel_date = st.date_input("Date de rappel", value=prev_rappel_date or date.today(), key=f"rdate_{abs(hash(key))}")
             with rr2:
                 rappel_time = st.time_input("Heure de rappel", value=prev_rappel_time or dtime(9,0), key=f"rtime_{abs(hash(key))}")
-        # V20 : sauvegarde automatique dès qu'un statut, commentaire ou rappel est saisi.
+        st.link_button("📤 Envoyer ce compte rendu WhatsApp", whatsapp_report_link(
+            client=r.get('nom_prospect',''),
+            departement=extract_departement(r.get('adresse_complete','')),
+            statut=statut,
+            commentaire=commentaire,
+            rappel_date=rappel_date.strftime("%d/%m/%Y") if isinstance(rappel_date, date) else "",
+            rappel_heure=fmt_time(rappel_time) if isinstance(rappel_time, dtime) else "",
+            adresse=r.get('adresse_complete',''),
+            telephone=r.get('telephone','')
+        ), use_container_width=True)
+        # V21 : sauvegarde automatique dès qu'un statut, commentaire ou rappel est saisi.
         if statut or str(commentaire).strip() or rappel_date or rappel_time:
             save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time)
             st.caption("💾 Sauvegarde automatique active")
