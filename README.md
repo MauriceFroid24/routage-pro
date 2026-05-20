@@ -1,12 +1,7 @@
-# Routage PRO V22
+# Routage PRO V23 — IA Closing renforcée
 
-Version basée sur la V21.2 stable.
+Version basée sur la V22.
 
-Ajout principal : module Préparation IA RDV.
+Ajout principal : préparation IA RDV beaucoup plus détaillée à partir du texte CRM copié/collé.
 
-Fonctions :
-- coller le détail CRM d'un RDV ;
-- génération de conseils terrain / closing ;
-- sauvegarde avec la fiche CRM ;
-- bouton WhatsApp pour envoyer la préparation ;
-- conservation des fonctions V21.2 : rappels intelligents, IK, carte, Waze, PDF, recherche globale.
+Conserve les fonctions existantes : routage, CRM, rappels intelligents, WhatsApp, IK, PDF/exports.

@@ -21,7 +21,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V22", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V23", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -54,7 +54,7 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V22 — terrain + IK + CRM + rappels + préparation RDV")
+st.title("🚗 Routage PRO V23 — terrain + IK + CRM + rappels + préparation RDV")
 st.caption("Mode sombre · carte claire · IK · CRM persistant · rappels intelligents · WhatsApp · préparation RDV")
 
 st.markdown("""
@@ -327,83 +327,175 @@ def whatsapp_report_link(client="", departement="", statut="", commentaire="", r
 
 
 def analyse_crm_details(details_text):
-    """Analyse locale et robuste des infos copiées depuis le CRM.
-    Objectif : donner une préparation terrain utile sans dépendre d'une API externe.
+    """Analyse terrain renforcée des infos copiées depuis le CRM.
+    V23 : plus détaillée, orientée closing, avec plan d'entretien et phrases utilisables.
+    Fonctionne sans API externe pour rester fiable sur Streamlit Cloud.
     """
     raw = str(details_text or "").strip()
     t = raw.lower()
     if not raw:
         return ""
 
-    points = []
-    objections = []
-    strategie = []
-    questions = []
-    vigilance = []
-
     def has(*words):
-        return any(w in t for w in words)
+        return any(str(w).lower() in t for w in words)
 
+    def find_amounts():
+        amounts = re.findall(r"(?:\b\d{2,4}\s*(?:€|eur|euro|euros)|\b\d{2,4}\s*/\s*mois)", raw, flags=re.I)
+        return list(dict.fromkeys([a.strip() for a in amounts]))[:6]
+
+    def find_surface():
+        m = re.search(r"(\d{2,3})\s*m\s*(?:2|²)", raw, flags=re.I)
+        return m.group(0) if m else ""
+
+    def find_age():
+        m = re.search(r"\b(\d{2})\s*ans\b", raw, flags=re.I)
+        return m.group(1) + " ans" if m else ""
+
+    signals = []
+    profil = []
+    douleurs = []
+    axes = []
+    objections = []
+    questions = []
+    phrases = []
+    erreurs = []
+    pieces = []
+    closing_steps = []
+
+    surface = find_surface()
+    age = find_age()
+    amounts = find_amounts()
+
+    # Profil / décision
     if has("retrait", "retraite", "retraité", "retraitée"):
-        points.append("Profil retraité : privilégier un discours rassurant, simple, concret et non agressif.")
-        strategie.append("Insister sur le confort quotidien, la tranquillité, la prise en charge administrative et l'accompagnement.")
-        objections.append("Peur des travaux, peur d'un crédit long, méfiance face aux démarches.")
-    if has("mari", "marié", "mariée", "épouse", "epouse", "conjoint", "conjointe"):
-        points.append("Décision probablement à deux : identifier rapidement qui décide réellement.")
-        questions.append("Est-ce que vous prenez la décision ensemble ou l'un de vous valide principalement le projet ?")
-    if has("bois", "cheminée", "cheminee", "poêle", "poele", "insert"):
-        points.append("Chauffage bois détecté : axe fort sur confort automatique, moins de manutention et chauffage homogène.")
-        strategie.append("Comparer la PAC au bois sur la pénibilité, la régularité de température et la simplicité d'usage.")
-    if has("fioul", "fuel"):
-        points.append("Fioul détecté : fort potentiel économies + remplacement d'une énergie coûteuse et contraignante.")
-        strategie.append("Mettre en avant sortie du fioul, aides, confort et réduction des livraisons/odeurs/maintenance.")
-    if has("gaz"):
-        points.append("Gaz détecté : parler économies, stabilité face aux hausses et solution plus moderne.")
-    if has("électrique", "electrique", "convecteur", "radiateur électrique"):
-        points.append("Chauffage électrique détecté : axe économies et confort si maison adaptée.")
-    if has("rfr", "revenu fiscal", "bleu", "jaune", "modeste", "très modeste", "tres modeste"):
-        points.append("Information revenus/aides présente : vérifier l'éligibilité et annoncer les aides avec prudence.")
-        strategie.append("Présenter le reste à charge seulement après avoir expliqué la valeur du projet et les aides mobilisables.")
-    if has("isolation", "combles", "ite", "iti", "fenêtre", "fenetre", "simple vitrage"):
-        points.append("Sujet isolation présent : vérifier l'état réel sur place, cela peut influencer le discours et l'éligibilité.")
-        questions.append("Qu'est-ce qui a déjà été isolé et en quelle année ?")
-    if has("méfiant", "mefiant", "harcel", "arnaque", "déjà appelé", "deja appelé", "doute"):
-        vigilance.append("Client potentiellement méfiant : éviter le discours trop commercial et montrer des preuves concrètes.")
-        strategie.append("Commencer par rassurer : entreprise, rôle, étapes, aucun engagement immédiat sans explication claire.")
-    if has("devis", "concurrent", "réfléchir", "reflechir"):
-        objections.append("Comparaison ou réflexion probable : préparer un argumentaire valeur, garanties, accompagnement et délais.")
-    if has("urgent", "rapidement", "vite", "panne"):
-        points.append("Urgence possible : mettre en avant réactivité, planning et solution rapide.")
+        profil.append("Client retraité : privilégier un rythme calme, rassurant, très concret, sans jargon technique.")
+        axes.append("Mettre en avant le confort au quotidien, la stabilité de température, moins de manutention et un accompagnement administratif complet.")
+        objections.append("Crainte de se faire embarquer dans des démarches compliquées ou un financement trop long.")
+    if has("mari", "marié", "mariée", "épouse", "epouse", "conjoint", "conjointe", "madame", "monsieur"):
+        profil.append("Décision probablement à deux : valider rapidement qui doit être convaincu et éviter de closer si un décisionnaire manque.")
+        questions.append("Est-ce que vous décidez ensemble ? Si on trouve une solution cohérente, qui doit absolument valider avant de lancer ?")
+    if has("vacance", "vacances", "retour", "pas dispo"):
+        profil.append("Le client a déjà eu une contrainte de disponibilité : être efficace, montrer que le RDV ne sera pas une perte de temps.")
 
-    if not points:
-        points.append("Lire le détail CRM sur place et commencer par une découverte courte : chauffage actuel, inconfort, budget, décisionnaires.")
-    if not strategie:
-        strategie.append("Faire parler le client d'abord, reformuler son problème, puis seulement proposer la solution adaptée.")
+    # Chauffage et douleurs
+    if has("bois", "cheminée", "cheminee", "poêle", "poele", "insert", "granulé", "granules"):
+        douleurs.append("Chauffage bois : manutention, saleté, stockage, température irrégulière, contraintes d'âge/santé.")
+        axes.append("Angle fort : garder le bois en appoint/plaisir, mais avoir un chauffage automatique confortable au quotidien.")
+        phrases.append("L'idée n'est pas forcément de supprimer le bois si vous l'aimez, mais de ne plus dépendre de lui tous les jours.")
+    if has("gaz"):
+        douleurs.append("Gaz : facture mensuelle, dépendance aux hausses, entretien chaudière, rendement qui baisse avec l'âge.")
+        axes.append("Comparer la mensualité/économie à la dépense actuelle et parler de modernisation du système.")
+        phrases.append("Aujourd'hui vous payez déjà votre chauffage ; l'objectif est de transformer une dépense subie en solution durable et mieux aidée.")
+    if has("fioul", "fuel"):
+        douleurs.append("Fioul : énergie coûteuse, livraison, odeur, entretien, image vieillissante.")
+        axes.append("Sortie du fioul = argument très fort : confort, aides, valeur maison, sérénité.")
+    if has("électrique", "electrique", "convecteur", "grille pain", "radiateur électrique"):
+        douleurs.append("Électrique direct : facture élevée et confort souvent médiocre.")
+        axes.append("Insister sur le rendement et la baisse de consommation si le dimensionnement est cohérent.")
+    if amounts:
+        signals.append("Montants repérés : " + ", ".join(amounts) + ". S'en servir pour comparer au reste à charge ou à la mensualité.")
+    if surface:
+        signals.append(f"Surface repérée : {surface}. À utiliser pour crédibiliser le dimensionnement et les économies.")
+    if age:
+        signals.append(f"Âge repéré : {age}. Adapter le discours : simplicité, sécurité, pas de complexité administrative.")
+
+    # Aides / revenus / maison
+    if has("rfr", "revenu fiscal", "bleu", "jaune", "modeste", "très modeste", "tres modeste", "maprimerenov", "prime"):
+        axes.append("Aides : présenter comme une opportunité à sécuriser, sans promettre de montant définitif avant vérification.")
+        questions.append("Vous avez bien votre dernier avis d'imposition ? C'est ce qui permet de verrouiller les aides et d'éviter les mauvaises surprises.")
+        pieces.append("Avis d'imposition / RFR")
+    if has("propriétaire", "proprietaire", "maison", "résidence principale", "residence principale"):
+        signals.append("Maison / résidence principale : bon terrain pour parler confort, valorisation du bien et solution long terme.")
+    if has("isolation", "combles", "ite", "iti", "fenêtre", "fenetre", "simple vitrage", "sous-sol", "sous sol"):
+        douleurs.append("Isolation à vérifier : peut conditionner le confort, les économies et parfois l'éligibilité.")
+        questions.append("Qu'est-ce qui a déjà été isolé, en quelle année, et par qui ?")
+
+    # Méfiance / objection
+    if has("méfiant", "mefiant", "arnaque", "harcel", "déjà appelé", "deja appelé", "doute", "pas intéressé", "pas interesse"):
+        objections.append("Méfiance forte : ne pas commencer par vendre. Commencer par expliquer qui tu es, pourquoi tu es là, et comment le client garde le contrôle.")
+        phrases.append("Je comprends votre méfiance, vous avez sûrement été beaucoup sollicité. Mon but aujourd'hui c'est d'abord de vérifier si le projet est cohérent, pas de vous forcer la main.")
+        erreurs.append("Éviter les phrases type 'offre exceptionnelle' ou 'il faut signer maintenant' trop tôt.")
+    if has("devis", "concurrent", "réfléchir", "reflechir", "voir", "comparer"):
+        objections.append("Client en comparaison/réflexion : il faudra vendre la sécurité, l'accompagnement, les délais, les garanties, pas seulement le prix.")
+        phrases.append("Vous avez raison de comparer. Mon rôle c'est de vous aider à comparer ce qui est vraiment comparable : matériel, pose, garanties, aides et suivi administratif.")
+    if has("cher", "prix", "budget", "mensual", "crédit", "credit", "financement"):
+        objections.append("Sensibilité prix/financement : parler d'abord valeur et économies avant de présenter mensualité ou reste à charge.")
+        questions.append("Aujourd'hui, entre chauffage, entretien et inconfort, combien ce système vous coûte réellement par mois ?")
+    if has("urgent", "rapidement", "vite", "panne", "froid"):
+        axes.append("Urgence : mettre en avant la réactivité et la capacité à sécuriser une solution rapidement.")
+
+    # Defaults
+    if not signals:
+        signals.append("Informations CRM à exploiter : situation familiale, chauffage actuel, facture, surface, motivation et freins.")
+    if not profil:
+        profil.append("Profil à découvrir sur place : décisionnaire, niveau de méfiance, urgence réelle, sensibilité au prix.")
+    if not douleurs:
+        douleurs.append("Douleurs à faire verbaliser : facture, inconfort, pannes, manutention, peur de l'avenir, valeur de la maison.")
+    if not axes:
+        axes.append("Axe principal : partir du problème du client, puis montrer que la solution répond précisément à ce problème.")
     if not objections:
-        objections.append("Objections probables : prix, méfiance, délai de travaux, besoin de réfléchir.")
+        objections.extend(["Prix / reste à charge", "Besoin de réfléchir", "Méfiance envers les aides", "Peur des travaux"])
     if not questions:
         questions.extend([
-            "Qu'est-ce qui vous dérange le plus aujourd'hui dans votre chauffage ?",
-            "Quel serait pour vous le résultat idéal après les travaux ?",
-            "Si le financement et les aides sont cohérents, qu'est-ce qui pourrait vous bloquer ?",
+            "Qu'est-ce qui vous a fait accepter le RDV ?",
+            "Qu'est-ce qui vous dérange le plus dans votre chauffage actuel ?",
+            "Si le projet est éligible et cohérent, qu'est-ce qui pourrait vous empêcher d'avancer ?",
         ])
-    if not vigilance:
-        vigilance.append("Ne pas annoncer de promesse d'aide ou de montant définitif sans vérification complète.")
+    if not phrases:
+        phrases.extend([
+            "Je vais d'abord vérifier si le projet est cohérent chez vous, et seulement après on parlera solution.",
+            "Le but n'est pas de vous vendre quelque chose d'inutile, mais de voir si les aides rendent le projet intéressant.",
+        ])
+    if not erreurs:
+        erreurs.extend([
+            "Ne pas annoncer un montant d'aide définitif sans vérification.",
+            "Ne pas aller trop vite au prix avant d'avoir fait exprimer le besoin.",
+            "Ne pas parler uniquement technique : le client achète surtout du confort, de la sécurité et de la simplicité.",
+        ])
+    if not pieces:
+        pieces.extend(["Avis d'imposition", "Factures énergie", "Photos/infos chauffage actuel", "Surface et isolation"])
 
-    def block(title, items):
+    closing_steps = [
+        "1. Rassurer : expliquer ton rôle, le déroulé du RDV et que rien n'est validé sans vérification.",
+        "2. Découverte : faire parler le client 5-10 minutes sur chauffage, factures, confort, travaux déjà faits.",
+        "3. Reformulation : résumer son problème avec ses mots pour créer l'accord.",
+        "4. Diagnostic : vérifier maison, chauffage, isolation, place matériel, contraintes techniques.",
+        "5. Valeur : relier la solution aux problèmes exprimés, pas à une fiche produit.",
+        "6. Aides/financement : présenter prudemment le scénario, puis le reste à charge/mensualité.",
+        "7. Closing doux : demander ce qui bloque réellement et traiter une objection à la fois.",
+    ]
+
+    # Priorité commerciale
+    if has("veut réfléchir", "veut reflechir", "réfléchir", "reflechir"):
+        priorite = "🟠 Priorité : client à travailler en réassurance. Objectif RDV : comprendre le vrai frein et programmer une suite claire."
+    elif has("urgent", "panne", "vite", "rapidement"):
+        priorite = "🔴 Priorité : forte urgence possible. Objectif RDV : sécuriser rapidement la faisabilité et le délai."
+    elif has("rfr", "modeste", "très modeste", "tres modeste", "bleu", "jaune"):
+        priorite = "🟢 Priorité : potentiel aides intéressant. Objectif RDV : vérifier l'éligibilité et cadrer le reste à charge."
+    else:
+        priorite = "🟡 Priorité : à qualifier sur place. Objectif RDV : identifier douleur + décisionnaire + budget."
+
+    def block(title, items, limit=10):
         lines = [title]
-        for it in items[:6]:
+        for it in items[:limit]:
             lines.append(f"- {it}")
         return "\n".join(lines)
 
     return "\n\n".join([
-        block("🎯 Points clés à retenir", points),
-        block("🧠 Stratégie de closing conseillée", strategie),
-        block("⚠️ Objections probables", objections),
-        block("❓ Questions à poser sur place", questions),
-        block("🛡️ Vigilance", vigilance),
+        "🔥 SYNTHÈSE CLOSING TERRAIN",
+        priorite,
+        block("🎯 Signaux importants repérés", signals, 8),
+        block("👤 Lecture du profil client", profil, 8),
+        block("💥 Douleurs à faire ressortir", douleurs, 8),
+        block("🧠 Angle de vente recommandé", axes, 10),
+        block("⚠️ Objections probables + réponse à préparer", objections, 10),
+        block("❓ Questions puissantes à poser", questions, 10),
+        block("🗣️ Phrases utiles à dire sur place", phrases, 10),
+        block("🧾 Pièces / points à vérifier", pieces, 8),
+        block("🪜 Plan de closing étape par étape", closing_steps, 10),
+        block("🚫 Erreurs à éviter", erreurs, 8),
+        "📌 Objectif final du RDV\n- Obtenir soit une signature, soit une suite cadrée : document manquant, rappel daté, décisionnaire à revoir, ou objection précise à traiter.\n- Ne jamais repartir avec un simple 'je vais réfléchir' sans date de rappel et raison exacte."
     ])
-
 
 def whatsapp_ai_prep_link(client="", departement="", adresse="", details="", analyse=""):
     msg = f"""Préparation RDV {client}{' (' + departement + ')' if departement else ''}
