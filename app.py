@@ -20,7 +20,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V15", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V17", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -32,8 +32,8 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V15 — terrain iPhone / Surface")
-st.caption("Mode sombre lisible · carte claire · calcul automatique · route réelle OSRM · retour base · pauses · départ conseillé")
+st.title("🚗 Routage PRO V17 — terrain + IK comptable")
+st.caption("Mode sombre lisible · carte claire · calcul automatique · module indemnités kilométriques PDF")
 
 st.markdown("""
 <style>
@@ -782,6 +782,182 @@ def get_last_uploaded_file():
             return None
     return None
 
+
+# ==============================
+# V17 — Module indemnités kilométriques
+# ==============================
+# Barème kilométrique voitures 2026 pour revenus 2025 — voitures thermiques, hybrides, hydrogène.
+# Pour véhicule 100% électrique, une majoration de 20% est appliquée.
+IK_BAREME_2026 = {
+    3: ((5000, 0.529, 0), (20000, 0.316, 1065), (float("inf"), 0.370, 0)),
+    4: ((5000, 0.606, 0), (20000, 0.340, 1330), (float("inf"), 0.407, 0)),
+    5: ((5000, 0.636, 0), (20000, 0.357, 1395), (float("inf"), 0.427, 0)),
+    6: ((5000, 0.665, 0), (20000, 0.374, 1457), (float("inf"), 0.447, 0)),
+    7: ((5000, 0.697, 0), (20000, 0.394, 1515), (float("inf"), 0.470, 0)),
+}
+
+
+def ik_cv_key(cv):
+    try:
+        cv = int(cv)
+    except Exception:
+        cv = 7
+    if cv <= 3:
+        return 3
+    if cv >= 7:
+        return 7
+    return cv
+
+
+def calc_ik_amount(km, cv=7, electric=False):
+    """Calcule l'indemnité kilométrique selon le barème 2026 voiture.
+    Attention : le barème est annuel. Pour un export mensuel, l'app calcule sur les km de la période sélectionnée.
+    Une régularisation annuelle peut être faite par le comptable si nécessaire.
+    """
+    d = max(0.0, float(km or 0))
+    key = ik_cv_key(cv)
+    brackets = IK_BAREME_2026[key]
+    if d <= brackets[0][0]:
+        amount = d * brackets[0][1] + brackets[0][2]
+        formula = f"{d:.1f} km × {brackets[0][1]:.3f}"
+    elif d <= brackets[1][0]:
+        amount = d * brackets[1][1] + brackets[1][2]
+        formula = f"({d:.1f} km × {brackets[1][1]:.3f}) + {brackets[1][2]:.0f}"
+    else:
+        amount = d * brackets[2][1] + brackets[2][2]
+        formula = f"{d:.1f} km × {brackets[2][1]:.3f}"
+    if electric:
+        amount *= 1.20
+        formula = f"({formula}) × 1,20 véhicule électrique"
+    return round(amount, 2), formula
+
+
+def euro(v):
+    try:
+        return f"{float(v):,.2f} €".replace(',', ' ').replace('.', ',')
+    except Exception:
+        return "0,00 €"
+
+
+def build_ik_register(route_df, return_row=None, include_return=True, start_address=DEFAULT_START):
+    rows = []
+    if route_df is None or route_df.empty:
+        return pd.DataFrame()
+    for _, r in route_df.iterrows():
+        d = r.get("date_rdv")
+        date_txt = d.strftime("%d/%m/%Y") if isinstance(d, date) else str(d or "")
+        rows.append({
+            "Date": date_txt,
+            "Objet": f"RDV client — {r.get('nom_prospect','')}",
+            "Départ": "Base" if int(r.get('ordre', 1) or 1) == 1 else "RDV précédent",
+            "Arrivée": r.get("adresse_complete", ""),
+            "Client": r.get("nom_prospect", ""),
+            "Téléprospecteur": r.get("teleprospecteur", ""),
+            "Km": round(to_float(r.get("distance_depuis_precedent_km")), 1),
+            "Temps": fmt_duration(r.get("temps_route_depuis_precedent_min", 0)),
+            "Justificatif": f"RDV {r.get('numero_rdv','')} à {fmt_time(r.get('heure_rdv'))}",
+        })
+    if include_return and return_row:
+        rows.append({
+            "Date": "",
+            "Objet": "Retour base",
+            "Départ": "Dernier RDV",
+            "Arrivée": start_address,
+            "Client": "Retour",
+            "Téléprospecteur": "",
+            "Km": round(to_float(return_row.get("distance_depuis_precedent_km")), 1),
+            "Temps": fmt_duration(return_row.get("temps_route_depuis_precedent_min", 0)),
+            "Justificatif": "Retour base après tournée",
+        })
+    return pd.DataFrame(rows)
+
+
+def create_ik_pdf(register_df, params):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.2*cm, leftMargin=1.2*cm, topMargin=1.0*cm, bottomMargin=1.0*cm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('IKTitle', parent=styles['Title'], fontSize=18, leading=22, textColor=colors.HexColor('#111827'))
+    h_style = ParagraphStyle('IKH', parent=styles['Heading2'], fontSize=12, leading=15, textColor=colors.HexColor('#111827'))
+    small = ParagraphStyle('IKSmall', parent=styles['Normal'], fontSize=8, leading=10)
+    normal = ParagraphStyle('IKNormal', parent=styles['Normal'], fontSize=9, leading=12)
+    story = []
+    story.append(Paragraph("Note de frais — Indemnités kilométriques", title_style))
+    story.append(Paragraph("Document généré depuis l’application Routage PRO V17", small))
+    story.append(Spacer(1, 0.25*cm))
+    info = [
+        ["Bénéficiaire", params.get('beneficiaire','Mr Dahan'), "Société", params.get('societe','')],
+        ["Période", params.get('periode',''), "Véhicule", params.get('vehicule','')],
+        ["Immatriculation", params.get('immat',''), "Puissance fiscale", f"{params.get('cv','')} CV"],
+        ["Base barème", params.get('bareme','Barème kilométrique 2026'), "Électrique", "Oui" if params.get('electric') else "Non"],
+    ]
+    t = Table(info, colWidths=[3.2*cm, 5.0*cm, 3.2*cm, 5.0*cm])
+    t.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#F3F4F6')),
+        ('BOX',(0,0),(-1,-1),0.5,colors.HexColor('#CBD5E1')),
+        ('INNERGRID',(0,0),(-1,-1),0.25,colors.HexColor('#CBD5E1')),
+        ('FONTNAME',(0,0),(-1,-1),'Helvetica'),
+        ('FONTSIZE',(0,0),(-1,-1),8),
+        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 0.35*cm))
+    total_km = float(register_df.get('Km', pd.Series(dtype=float)).sum()) if not register_df.empty else 0.0
+    amount = params.get('amount', 0.0)
+    summary = [
+        ["Total kilomètres professionnels", f"{total_km:.1f} km"],
+        ["Formule appliquée", params.get('formula','')],
+        ["Montant à rembourser", euro(amount)],
+    ]
+    stbl = Table(summary, colWidths=[7.5*cm, 8.9*cm])
+    stbl.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,1),colors.HexColor('#E0F2FE')),
+        ('BACKGROUND',(0,2),(-1,2),colors.HexColor('#DCFCE7')),
+        ('BOX',(0,0),(-1,-1),0.75,colors.HexColor('#0F172A')),
+        ('INNERGRID',(0,0),(-1,-1),0.25,colors.HexColor('#94A3B8')),
+        ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+        ('FONTSIZE',(0,0),(-1,-1),9),
+    ]))
+    story.append(stbl)
+    story.append(Spacer(1, 0.35*cm))
+    story.append(Paragraph("Détail des déplacements", h_style))
+    table_data = [["Date", "Objet", "Arrivée", "Km", "Temps", "Justificatif"]]
+    for _, r in register_df.iterrows():
+        table_data.append([
+            str(r.get('Date','')),
+            Paragraph(str(r.get('Objet','')), small),
+            Paragraph(str(r.get('Arrivée','')), small),
+            f"{to_float(r.get('Km')):.1f}",
+            str(r.get('Temps','')),
+            Paragraph(str(r.get('Justificatif','')), small),
+        ])
+    tbl = Table(table_data, colWidths=[1.7*cm, 3.5*cm, 6.2*cm, 1.3*cm, 1.7*cm, 2.8*cm], repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor('#111827')),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('FONTSIZE',(0,0),(-1,-1),7),
+        ('GRID',(0,0),(-1,-1),0.25,colors.HexColor('#CBD5E1')),
+        ('VALIGN',(0,0),(-1,-1),'TOP'),
+        ('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white, colors.HexColor('#F8FAFC')]),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph("Déclaration", h_style))
+    story.append(Paragraph("Je certifie que les déplacements ci-dessus ont été effectués dans le cadre professionnel et que les kilomètres déclarés correspondent aux trajets calculés par l’application à partir des adresses de rendez-vous.", normal))
+    story.append(Spacer(1, 0.5*cm))
+    sig = Table([["Date :", "", "Signature bénéficiaire :", ""]], colWidths=[2*cm,4*cm,4*cm,5*cm])
+    sig.setStyle(TableStyle([('LINEBELOW',(1,0),(1,0),0.5,colors.black),('LINEBELOW',(3,0),(3,0),0.5,colors.black),('FONTSIZE',(0,0),(-1,-1),9)]))
+    story.append(sig)
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph("Note : le barème kilométrique couvre notamment la dépréciation, l’entretien, les pneumatiques, le carburant et l’assurance. Les péages et stationnements peuvent être ajoutés séparément sur justificatifs.", small))
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def df_to_csv_bytes(df):
+    return df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+
 with st.sidebar:
     st.header("Réglages")
     start_address = st.text_input("Adresse de départ / retour", value=DEFAULT_START)
@@ -927,8 +1103,55 @@ csv_bytes = to_recap_csv(route_df, return_row)
 
 c1, c2 = st.columns(2)
 with c1:
-    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v13.pdf", mime="application/pdf", use_container_width=True)
+    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v17.pdf", mime="application/pdf", use_container_width=True)
 with c2:
-    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v13.csv", mime="text/csv", use_container_width=True)
+    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v17.csv", mime="text/csv", use_container_width=True)
 
-st.caption("V13 : calcul automatique après import. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
+
+st.subheader("💰 Indemnités kilométriques — PDF professionnel")
+st.caption("Module V17 séparé : il ne modifie pas la tournée. Tu peux générer une note de frais mensuelle/propre à partir des trajets calculés.")
+with st.expander("Paramétrer la note de frais IK", expanded=False):
+    a,b,c = st.columns(3)
+    with a:
+        beneficiaire = st.text_input("Bénéficiaire", value="Mr Dahan")
+        societe = st.text_input("Société à facturer / rembourser", value="")
+        periode = st.text_input("Période", value=datetime.now().strftime("%B %Y"))
+    with b:
+        vehicule = st.text_input("Véhicule", value="")
+        immat = st.text_input("Immatriculation", value="")
+        cv = st.selectbox("Puissance fiscale", options=[3,4,5,6,7], index=4, help="7 = 7 CV et plus")
+    with c:
+        electric = st.checkbox("Véhicule 100% électrique (+20%)", value=False)
+        include_return_ik = st.checkbox("Inclure le retour à la base", value=True)
+        st.info("Barème voiture 2026, revenus 2025. À valider avec ton comptable selon ton montage exact.")
+
+    ik_register = build_ik_register(route_df, return_row, include_return_ik, start_address)
+    total_ik_km = float(ik_register["Km"].sum()) if not ik_register.empty else 0.0
+    ik_amount, ik_formula = calc_ik_amount(total_ik_km, cv=cv, electric=electric)
+    k1,k2,k3 = st.columns(3)
+    k1.metric("Km IK", f"{total_ik_km:.1f} km")
+    k2.metric("Montant IK", euro(ik_amount))
+    k3.metric("Barème", f"{cv} CV" + (" électrique" if electric else ""))
+    st.dataframe(ik_register, use_container_width=True, hide_index=True)
+
+    ik_params = {
+        "beneficiaire": beneficiaire,
+        "societe": societe,
+        "periode": periode,
+        "vehicule": vehicule,
+        "immat": immat,
+        "cv": cv,
+        "electric": electric,
+        "bareme": "Barème kilométrique 2026 — voitures",
+        "amount": ik_amount,
+        "formula": ik_formula,
+    }
+    ik_pdf = create_ik_pdf(ik_register, ik_params)
+    d1,d2 = st.columns(2)
+    with d1:
+        st.download_button("📄 Télécharger la note IK PDF", data=ik_pdf, file_name="note_indemnites_kilometriques.pdf", mime="application/pdf", use_container_width=True)
+    with d2:
+        st.download_button("📊 Télécharger le registre IK CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques.csv", mime="text/csv", use_container_width=True)
+
+
+st.caption("V17 : V16 stable + module IK PDF professionnel. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")

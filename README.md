@@ -1,16 +1,14 @@
-# Routage PRO V15
+# Routage PRO V17
 
-Version complète.
+Base V16 stable + module Indemnités Kilométriques.
 
-Corrections V15 :
-- bannières/accordéons du mode terrain lisibles sur PC ;
-- suppression du bandeau blanc en haut ;
-- liens Waze basés sur l'adresse complète pour conserver le numéro de rue ;
-- carte conservée en mode jour ;
-- calculs et fonctions V14 conservés.
+## Nouveautés V17
+- Ajout d'un module `Indemnités kilométriques` sans modifier le fonctionnement de la tournée.
+- Paramètres : bénéficiaire, société, période, véhicule, immatriculation, CV fiscaux, véhicule électrique.
+- Génération d'un PDF professionnel de note de frais IK.
+- Génération d'un registre CSV comptable.
+- Possibilité de revenir à la V16.3 en ré-uploadant le ZIP V16.3 sur GitHub.
 
-
-## V16
-- Numéros RDV terrain recalculés automatiquement : 1, 2, 3... selon l’heure de début.
-- Ajout du nom + prénom du téléprospecteur en mode terrain.
-- Aucune modification du moteur de calcul, de la carte ou des liens existants.
+## Important comptabilité
+Le barème intégré est le barème kilométrique 2026 pour les revenus 2025, voitures thermiques/hybrides/hydrogène, avec majoration 20% pour véhicule 100% électrique.
+À valider avec le comptable selon le montage exact de remboursement/facturation.
