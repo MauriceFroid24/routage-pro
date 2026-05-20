@@ -21,7 +21,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V21", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V21.2", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -54,8 +54,8 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V21 — terrain + IK + CRM + rappels WhatsApp")
-st.caption("Mode sombre lisible · carte claire · IK paramétrable · CRM persistant · rappels enrichis · WhatsApp")
+st.title("🚗 Routage PRO V21.2 — terrain + IK + CRM + rappels intelligents")
+st.caption("Mode sombre lisible · carte claire · IK paramétrable · CRM persistant · rappels intelligents · WhatsApp")
 
 st.markdown("""
 <style>
@@ -161,6 +161,41 @@ header[data-testid="stHeader"] + div {
 /* Force les textes Streamlit à rester lisibles sur PC */
 .stMarkdown, .stMarkdown p, .stMarkdown span, label, div[data-testid="stText"] {
     color: #f5f5f5 !important;
+}
+
+
+/* V21.2 — rappels intelligents */
+.reminder-card {
+    border-radius: 16px;
+    padding: 14px 16px;
+    margin: 10px 0 8px 0;
+    border: 2px solid #333;
+    background: #111827;
+    color: #fff;
+}
+.reminder-card strong { font-size: 1.08rem; }
+.reminder-today {
+    background: linear-gradient(90deg, #7f1d1d, #f97316);
+    border-color: #fde047;
+    box-shadow: 0 0 18px rgba(249, 115, 22, 0.85);
+    animation: rappelPulse 1s infinite alternate;
+}
+.reminder-late {
+    background: linear-gradient(90deg, #450a0a, #991b1b);
+    border-color: #ef4444;
+}
+.reminder-future {
+    background: #111827;
+    border-color: #2563eb;
+}
+.reminder-treated {
+    background: #0f172a;
+    border-color: #475569;
+    opacity: 0.75;
+}
+@keyframes rappelPulse {
+    from { filter: brightness(1); transform: scale(1); }
+    to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
 </style>
@@ -870,7 +905,7 @@ def crm_key(row):
 
 
 def crm_columns():
-    return ["key", "date_rdv", "heure_rdv", "client", "telephone", "telephone_tel", "adresse", "teleprospecteur", "fournisseur", "commercial", "statut", "commentaire", "date_rappel", "heure_rappel", "created_at", "updated_at"]
+    return ["key", "date_rdv", "heure_rdv", "client", "telephone", "telephone_tel", "adresse", "teleprospecteur", "fournisseur", "commercial", "statut", "commentaire", "date_rappel", "heure_rappel", "rappel_traite", "traite_at", "created_at", "updated_at"]
 
 
 def empty_crm_df():
@@ -915,12 +950,23 @@ def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time
         "created_at": now,
         "updated_at": now,
     }
+    # Par défaut, un rappel nouvellement saisi est non traité.
+    # Si le RDV existait déjà et avait été marqué traité, on conserve l'état traité tant que la date/heure de rappel ne change pas.
+    record["rappel_traite"] = "non"
+    record["traite_at"] = ""
     if hist.empty or key not in hist.get("key", pd.Series(dtype=str)).astype(str).tolist():
         hist = pd.concat([hist, pd.DataFrame([record])], ignore_index=True)
     else:
         idx = hist.index[hist["key"].astype(str) == key]
         created = hist.loc[idx[0], "created_at"] if len(idx) else now
+        old_date = str(hist.loc[idx[0], "date_rappel"]) if len(idx) and "date_rappel" in hist.columns else ""
+        old_time = str(hist.loc[idx[0], "heure_rappel"]) if len(idx) and "heure_rappel" in hist.columns else ""
+        old_done = str(hist.loc[idx[0], "rappel_traite"]).lower() if len(idx) and "rappel_traite" in hist.columns else "non"
+        old_done_at = str(hist.loc[idx[0], "traite_at"]) if len(idx) and "traite_at" in hist.columns else ""
         record["created_at"] = created
+        if old_date == record.get("date_rappel", "") and old_time == record.get("heure_rappel", ""):
+            record["rappel_traite"] = "oui" if old_done in ["oui", "true", "1", "yes"] else "non"
+            record["traite_at"] = old_done_at if record["rappel_traite"] == "oui" else ""
         for k, v in record.items():
             hist.loc[idx, k] = v
     try:
@@ -931,6 +977,43 @@ def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time
         hist[crm_columns()].to_csv(CRM_HISTORY_PATH, index=False, sep=";", encoding="utf-8-sig")
     except Exception:
         pass
+
+
+def mark_reminder_treated(key, treated=True):
+    # Marque un rappel comme traité / non traité dans l'historique CRM.
+    hist = load_crm_history()
+    if hist.empty:
+        return
+    if "rappel_traite" not in hist.columns:
+        hist["rappel_traite"] = "non"
+    if "traite_at" not in hist.columns:
+        hist["traite_at"] = ""
+    idx = hist.index[hist["key"].astype(str) == str(key)]
+    if len(idx):
+        hist.loc[idx, "rappel_traite"] = "oui" if treated else "non"
+        hist.loc[idx, "traite_at"] = datetime.now().strftime("%d/%m/%Y %H:%M") if treated else ""
+        try:
+            for c in crm_columns():
+                if c not in hist.columns:
+                    hist[c] = ""
+            CRM_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            hist[crm_columns()].to_csv(CRM_HISTORY_PATH, index=False, sep=";", encoding="utf-8-sig")
+        except Exception:
+            pass
+
+
+def is_reminder_treated(row):
+    return str(row.get("rappel_traite", "")).strip().lower() in ["oui", "true", "1", "yes", "traité", "traite"]
+
+
+def reminder_section_label(dt, now_dt):
+    if dt is None:
+        return "future"
+    if dt.date() < now_dt.date():
+        return "late"
+    if dt.date() == now_dt.date():
+        return "today"
+    return "future"
 
 
 def reminder_datetime(row):
@@ -1400,27 +1483,78 @@ if not crm_df.empty:
     now_dt = datetime.now()
     reminders = crm_df[(crm_df.get("statut", "") == "À rappeler") & crm_df["_rappel_dt"].notna()].copy()
     reminders = reminders.sort_values("_rappel_dt")
-    due = reminders[reminders["_rappel_dt"] <= now_dt + timedelta(days=7)]
-    if not due.empty:
-        st.subheader("🔔 Rappels à faire")
-        for _, rr in due.head(10).iterrows():
-            delay = "🔴 dépassé" if rr["_rappel_dt"] < now_dt else "🟡 à venir"
-            with st.container(border=True):
+
+    untreated = reminders[~reminders.apply(is_reminder_treated, axis=1)].copy() if not reminders.empty else reminders
+    treated = reminders[reminders.apply(is_reminder_treated, axis=1)].copy() if not reminders.empty else reminders
+
+    today_reminders = untreated[untreated["_rappel_dt"].apply(lambda x: reminder_section_label(x, now_dt) == "today")]
+    late_reminders = untreated[untreated["_rappel_dt"].apply(lambda x: reminder_section_label(x, now_dt) == "late")]
+    future_reminders = untreated[untreated["_rappel_dt"].apply(lambda x: reminder_section_label(x, now_dt) == "future")]
+
+    def render_reminder_card(rr, label, css_class):
+        dep = extract_departement(rr.get("adresse", ""))
+        note = str(rr.get("commentaire", "") or "").strip()
+        client = rr.get("client", "")
+        dt_txt = f"{rr.get('date_rappel','')} {rr.get('heure_rappel','')}".strip()
+        note_html = ("<span>📝 " + note + "</span>") if note else "<span>📝 Aucune note renseignée</span>"
+        dep_txt = (" (" + dep + ")") if dep else ""
+        st.markdown(f"""
+<div class="reminder-card {css_class}">
+  <strong>{label} — {client}{dep_txt}</strong><br>
+  <span>🕒 {dt_txt}</span><br>
+  {note_html}
+</div>
+""", unsafe_allow_html=True)
+        cols_rem = st.columns([1, 1, 1, 1])
+        tel_digits = re.sub(r"\D", "", str(rr.get("telephone", "")))
+        if tel_digits:
+            cols_rem[0].link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
+        cols_rem[1].link_button("🗺️ Adresse", maps_link(rr.get("adresse", "")), use_container_width=True)
+        cols_rem[2].link_button("📤 WhatsApp", whatsapp_report_link(
+            client=client, departement=dep, statut=rr.get("statut", ""),
+            commentaire=note, rappel_date=rr.get("date_rappel", ""), rappel_heure=rr.get("heure_rappel", ""),
+            adresse=rr.get("adresse", ""), telephone=rr.get("telephone", "")
+        ), use_container_width=True)
+        key_done = f"done_rem_{abs(hash(str(rr.get('key','')) + dt_txt))}"
+        if cols_rem[3].button("✅ Traité", key=key_done, use_container_width=True):
+            mark_reminder_treated(rr.get("key", ""), True)
+            st.success("Rappel marqué comme traité.")
+            st.rerun()
+
+    if not today_reminders.empty or not late_reminders.empty or not future_reminders.empty:
+        st.subheader("🔔 Rappels à traiter")
+        if not today_reminders.empty:
+            st.markdown("### 🚨 À faire aujourd’hui")
+            for _, rr in today_reminders.iterrows():
+                render_reminder_card(rr, "🚨 AUJOURD’HUI", "reminder-today")
+        if not late_reminders.empty:
+            st.markdown("### 🔴 En retard")
+            for _, rr in late_reminders.iterrows():
+                render_reminder_card(rr, "🔴 EN RETARD", "reminder-late")
+        if not future_reminders.empty:
+            st.markdown("### 🟡 Futurs rappels")
+            for _, rr in future_reminders.head(20).iterrows():
+                render_reminder_card(rr, "🟡 À VENIR", "reminder-future")
+
+    with st.expander("✅ Rappels traités / archivés", expanded=False):
+        if treated.empty:
+            st.caption("Aucun rappel traité pour le moment.")
+        else:
+            for _, rr in treated.sort_values("_rappel_dt", ascending=False).head(50).iterrows():
                 dep = extract_departement(rr.get("adresse", ""))
                 note = str(rr.get("commentaire", "") or "").strip()
-                st.markdown(f"**{delay} — {rr['client']}" + (f" ({dep})" if dep else "") + f"** · {rr.get('date_rappel','')} {rr.get('heure_rappel','')}")
-                if note:
-                    st.markdown(f"📝 {note}")
-                cols_rem = st.columns(3)
-                tel_digits = re.sub(r"\D", "", str(rr.get("telephone", "")))
-                if tel_digits:
-                    cols_rem[0].link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
-                cols_rem[1].link_button("🗺️ Adresse", maps_link(rr.get("adresse", "")), use_container_width=True)
-                cols_rem[2].link_button("📤 WhatsApp", whatsapp_report_link(
-                    client=rr.get("client", ""), departement=dep, statut=rr.get("statut", ""),
-                    commentaire=note, rappel_date=rr.get("date_rappel", ""), rappel_heure=rr.get("heure_rappel", ""),
-                    adresse=rr.get("adresse", ""), telephone=rr.get("telephone", "")
-                ), use_container_width=True)
+                dep_txt = (" (" + dep + ")") if dep else ""
+                note_html = ("<span>📝 " + note + "</span>") if note else ""
+                st.markdown(f"""
+<div class="reminder-card reminder-treated">
+  <strong>✅ TRAITÉ — {rr.get('client','')}{dep_txt}</strong><br>
+  <span>🕒 {rr.get('date_rappel','')} {rr.get('heure_rappel','')} · traité le {rr.get('traite_at','')}</span><br>
+  {note_html}
+</div>
+""", unsafe_allow_html=True)
+                if st.button("↩️ Remettre à traiter", key=f"undone_rem_{abs(hash(str(rr.get('key',''))))}"):
+                    mark_reminder_treated(rr.get("key", ""), False)
+                    st.rerun()
 
 
 # Recherche globale CRM + tournée courante
