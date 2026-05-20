@@ -1,7 +1,25 @@
-# Routage PRO V23 — IA Closing renforcée
+# Routage PRO V24 — Import CRM assisté expérimental
 
-Version basée sur la V22.
+Base : V23 stable.
 
-Ajout principal : préparation IA RDV beaucoup plus détaillée à partir du texte CRM copié/collé.
+Ajouts :
+- l'application accepte un Excel enrichi avec une colonne `details_crm` ;
+- les infos CRM collées/récupérées alimentent directement la préparation IA ;
+- un robot local expérimental `robot_crm_froid24.py` peut tenter de télécharger l'Excel depuis le CRM Alltoo/FROID24.
 
-Conserve les fonctions existantes : routage, CRM, rappels intelligents, WhatsApp, IK, PDF/exports.
+## Mise à jour Streamlit
+Uploader dans GitHub :
+- `app.py`
+- `requirements.txt`
+- `README.md`
+
+## Robot local Surface
+À lancer sur ta Surface, pas sur Streamlit Cloud :
+
+1. Dézipper le dossier.
+2. Double-cliquer sur `LANCER_ROBOT_CRM.bat`.
+3. Saisir identifiant, mot de passe et date.
+4. Le robot tente de télécharger l'Excel dans `exports_crm/`.
+5. Importer ensuite cet Excel dans l'application.
+
+Important : c'est expérimental. Le CRM peut changer ses boutons/menus, donc le robot pourra nécessiter des ajustements.

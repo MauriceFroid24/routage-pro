@@ -21,7 +21,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V23", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V24", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -54,8 +54,8 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V23 — terrain + IK + CRM + rappels + préparation RDV")
-st.caption("Mode sombre · carte claire · IK · CRM persistant · rappels intelligents · WhatsApp · préparation RDV")
+st.title("🚗 Routage PRO V24 — CRM assisté + IA Closing")
+st.caption("Mode sombre · carte claire · IK · CRM · rappels · WhatsApp · préparation IA · import CRM assisté")
 
 st.markdown("""
 <style>
@@ -211,6 +211,19 @@ def safe_get(row, idx):
         return str(v).strip()
     except Exception:
         return ""
+
+
+def get_by_header(row, possible_names):
+    """Récupère une valeur par nom de colonne quand le fichier Excel enrichi contient des colonnes supplémentaires."""
+    try:
+        names = [str(x).strip().lower() for x in possible_names]
+        for col in row.index:
+            if str(col).strip().lower() in names:
+                val = row.get(col, "")
+                return "" if pd.isna(val) else str(val).strip()
+    except Exception:
+        pass
+    return ""
 
 
 def parse_date(v):
@@ -663,6 +676,10 @@ def prepare_dataframe(file):
         h = parse_time(row.iloc[COLS["heure_debut"]] if len(row) > COLS["heure_debut"] else "")
         phone_fmt, phone_digits = format_phone(safe_get(row, COLS["telephone"]))
         telepros_full = full_name(safe_get(row, COLS["telepros_prenom"]), safe_get(row, COLS["telepros_nom"]))
+        details_import = get_by_header(row, [
+            "details_crm", "detail_crm", "remarque_crm", "remarques_crm",
+            "infos_client", "informations_client", "preparation_ia", "note_crm"
+        ])
         rows.append({
             "numero_rdv": safe_get(row, COLS["numero_rdv"]),
             "nom_prospect": full_name(safe_get(row, COLS["prenom"]), safe_get(row, COLS["nom"])),
@@ -679,6 +696,7 @@ def prepare_dataframe(file):
             "fournisseur": safe_get(row, COLS["fournisseur"]),
             "commercial": full_name(safe_get(row, COLS["commercial_prenom"]), safe_get(row, COLS["commercial_nom"])),
             "teleprospecteur": telepros_full,
+            "details_crm_import": details_import,
         })
     result = pd.DataFrame(rows)
     if not result.empty:
@@ -1546,6 +1564,16 @@ with st.sidebar:
     visit_min = st.number_input("Durée moyenne d'un RDV", min_value=15, max_value=240, value=int(settings.get("visit_min", 150)), step=15)
     use_google = st.checkbox("Utiliser Google trafic / Street View si j'ai une clé API", value=bool(settings.get("use_google", False)))
     google_key = st.text_input("Clé Google Maps API (optionnel)", value=settings.get("google_key", ""), type="password") if use_google else ""
+    with st.expander("🤖 Import CRM assisté V24", expanded=False):
+        st.markdown("""
+        **Option expérimentale.** Pour éviter de toucher à ton CRM en ligne, la méthode la plus sûre est :
+        1. lancer le robot local sur ta Surface ;
+        2. il télécharge l’Excel CRM ;
+        3. il peut aussi créer un fichier enrichi avec une colonne `details_crm` ;
+        4. tu importes ce fichier ici comme d’habitude.
+
+        Le robot local est fourni dans le ZIP : `robot_crm_froid24.py`.
+        """)
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
     auto_reload = st.checkbox("Recharger automatiquement le dernier Excel de la journée", value=True)
@@ -1563,7 +1591,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V22 : V21.2 stable + préparation RDV depuis le détail CRM.")
+    st.info("V24 : V23 stable + import CRM assisté expérimental.")
 
 source_file = None
 source_label = ""
@@ -1847,7 +1875,10 @@ for _, r in route_df.iterrows():
         previous = crm_hist[crm_hist["key"].astype(str) == key].tail(1) if not crm_hist.empty else pd.DataFrame()
         prev_statut = previous.iloc[0].get("statut", "") if not previous.empty else ""
         prev_comment = previous.iloc[0].get("commentaire", "") if not previous.empty else ""
-        prev_details_crm = previous.iloc[0].get("details_crm", "") if not previous.empty else ""
+        imported_details = str(r.get("details_crm_import", "") or "").strip()
+        prev_details_crm = previous.iloc[0].get("details_crm", "") if not previous.empty else imported_details
+        if not str(prev_details_crm or "").strip() and imported_details:
+            prev_details_crm = imported_details
         prev_analyse_ia = previous.iloc[0].get("analyse_ia", "") if not previous.empty else ""
         prev_rappel_date = parse_date(previous.iloc[0].get("date_rappel", "")) if not previous.empty else None
         prev_rappel_time = parse_time(previous.iloc[0].get("heure_rappel", "")) if not previous.empty else None
