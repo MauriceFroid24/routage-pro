@@ -1,15 +1,10 @@
-# Routage PRO V19
+# Routage PRO V20 — CRM persistant + recherche globale
 
-Version séparée de la V18.
+Base V19 conservée. Ajouts V20 :
+- sauvegarde automatique des statuts, commentaires et rappels ;
+- sauvegarde automatique des paramètres IK/véhicule ;
+- bloc rappels visibles ;
+- recherche globale client/téléphone/adresse/téléprospecteur/commentaire/statut ;
+- IK, PDF, carte, Waze et mode terrain conservés.
 
-Ajouts principaux :
-- forfait IK interne manuel ou barème officiel ;
-- sauvegarde automatique des réglages ;
-- montant IK par trajet basé sur le choix du forfait ;
-- période de facturation IK personnalisable de date à date ;
-- compte rendu de fin de RDV ;
-- statuts : Signé, Veut réfléchir, Absent, Négatif, À rappeler, VT à planifier ;
-- date/heure de rappel avec bloc rappels visibles ;
-- téléphone cliquable dans les rappels.
-
-Pour revenir en arrière, ré-upload simplement la V18 ou V16.3 sur GitHub.
+Pour revenir en arrière : ré-uploade simplement la V19 ou V18 sur GitHub.

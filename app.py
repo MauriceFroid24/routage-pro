@@ -21,14 +21,32 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V19", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V20", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
-LAST_UPLOAD_PATH = Path("/tmp/routage_pro_dernier_fichier.xlsx")
-IK_HISTORY_DIR = Path("/tmp/routage_pro_ik_history")
-APP_STATE_PATH = Path("/tmp/routage_pro_v19_settings.json")
-CRM_HISTORY_PATH = Path("/tmp/routage_pro_v19_crm.csv")
+
+def _get_data_dir():
+    # Espace de sauvegarde serveur : tient aux simples rafraîchissements de page.
+    # Sur Streamlit Cloud, il peut être réinitialisé lors d'un redémarrage ou redéploiement.
+    for candidate in [Path.home() / ".routage_pro", Path("/tmp/routage_pro")]:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            test = candidate / ".write_test"
+            test.write_text("ok", encoding="utf-8")
+            test.unlink(missing_ok=True)
+            return candidate
+        except Exception:
+            pass
+    return Path("/tmp")
+
+DATA_DIR = _get_data_dir()
+LAST_UPLOAD_PATH = DATA_DIR / "dernier_fichier.xlsx"
+IK_HISTORY_DIR = DATA_DIR / "ik_history"
+APP_STATE_PATH = DATA_DIR / "settings_v20.json"
+APP_STATE_FALLBACK_PATHS = [Path("/tmp/routage_pro_v19_settings.json"), DATA_DIR / "settings_v19.json"]
+CRM_HISTORY_PATH = DATA_DIR / "crm_v20.csv"
+CRM_HISTORY_FALLBACK_PATHS = [Path("/tmp/routage_pro_v19_crm.csv"), DATA_DIR / "crm_v19.csv"]
 
 COLS = {
     "numero_rdv": 0, "adresse": 1, "code_postal": 2, "date_rdv": 3, "heure_debut": 4,
@@ -36,8 +54,8 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V19 — terrain + IK + rappels")
-st.caption("Mode sombre lisible · carte claire · calcul automatique · IK paramétrable · comptes rendus RDV · rappels")
+st.title("🚗 Routage PRO V20 — terrain + IK + CRM persistant + recherche")
+st.caption("Mode sombre lisible · carte claire · IK paramétrable · sauvegarde auto CRM · rappels · recherche globale")
 
 st.markdown("""
 <style>
@@ -765,17 +783,21 @@ def to_minutes(value, default=0):
 
 
 def load_app_settings():
-    try:
-        if APP_STATE_PATH.exists():
-            return json.loads(APP_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        pass
+    for path in [APP_STATE_PATH] + APP_STATE_FALLBACK_PATHS:
+        try:
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
     return {}
 
 
 def save_app_settings(data):
     try:
-        APP_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        current = load_app_settings()
+        current.update(data or {})
+        APP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        APP_STATE_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -786,13 +808,26 @@ def crm_key(row):
     return "|".join([d_txt, str(row.get("heure_rdv", "")), str(row.get("nom_prospect", "")), str(row.get("telephone_tel", "")), str(row.get("adresse_complete", ""))])
 
 
+def crm_columns():
+    return ["key", "date_rdv", "heure_rdv", "client", "telephone", "telephone_tel", "adresse", "teleprospecteur", "fournisseur", "commercial", "statut", "commentaire", "date_rappel", "heure_rappel", "created_at", "updated_at"]
+
+
+def empty_crm_df():
+    return pd.DataFrame(columns=crm_columns())
+
+
 def load_crm_history():
-    if not CRM_HISTORY_PATH.exists():
-        return pd.DataFrame(columns=["key", "date_rdv", "heure_rdv", "client", "telephone", "adresse", "statut", "commentaire", "date_rappel", "heure_rappel", "created_at", "updated_at"])
-    try:
-        return pd.read_csv(CRM_HISTORY_PATH, sep=";", dtype=str).fillna("")
-    except Exception:
-        return pd.DataFrame(columns=["key", "date_rdv", "heure_rdv", "client", "telephone", "adresse", "statut", "commentaire", "date_rappel", "heure_rappel", "created_at", "updated_at"])
+    for path in [CRM_HISTORY_PATH] + CRM_HISTORY_FALLBACK_PATHS:
+        try:
+            if path.exists():
+                df = pd.read_csv(path, sep=";", dtype=str).fillna("")
+                for c in crm_columns():
+                    if c not in df.columns:
+                        df[c] = ""
+                return df[crm_columns()]
+        except Exception:
+            pass
+    return empty_crm_df()
 
 
 def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time=None):
@@ -807,7 +842,11 @@ def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time
         "heure_rdv": t_txt,
         "client": row.get("nom_prospect", ""),
         "telephone": row.get("telephone", ""),
+        "telephone_tel": row.get("telephone_tel", ""),
         "adresse": row.get("adresse_complete", ""),
+        "teleprospecteur": row.get("teleprospecteur", ""),
+        "fournisseur": row.get("fournisseur", ""),
+        "commercial": row.get("commercial", ""),
         "statut": statut or "",
         "commentaire": commentaire or "",
         "date_rappel": rappel_date.strftime("%d/%m/%Y") if isinstance(rappel_date, date) else str(rappel_date or ""),
@@ -824,7 +863,11 @@ def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time
         for k, v in record.items():
             hist.loc[idx, k] = v
     try:
-        hist.to_csv(CRM_HISTORY_PATH, index=False, sep=";", encoding="utf-8-sig")
+        for c in crm_columns():
+            if c not in hist.columns:
+                hist[c] = ""
+        CRM_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        hist[crm_columns()].to_csv(CRM_HISTORY_PATH, index=False, sep=";", encoding="utf-8-sig")
     except Exception:
         pass
 
@@ -1182,7 +1225,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V19 : V18 stable + IK manuel/auto + compte rendu RDV + rappels.")
+    st.info("V20 : V19 stable + sauvegarde CRM auto + recherche globale.")
 
 source_file = None
 source_label = ""
@@ -1310,6 +1353,62 @@ if not crm_df.empty:
                     cols_rem[0].link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
                 cols_rem[1].link_button("🗺️ Adresse", google_maps_link(rr.get("adresse", "")), use_container_width=True)
 
+
+# Recherche globale CRM + tournée courante
+st.subheader("🔎 Recherche globale")
+search_q = st.text_input("Rechercher un client, téléphone, adresse, téléprospecteur, commentaire ou statut", value="", placeholder="Ex : Dupont, 06..., À rappeler, signé...")
+if search_q.strip():
+    q = search_q.strip().lower()
+    results = []
+    # RDV de la tournée courante
+    for _, rr in route_df.iterrows():
+        hay = " ".join([str(rr.get(c, "")) for c in ["nom_prospect", "telephone", "adresse_complete", "teleprospecteur", "fournisseur", "commercial"]]).lower()
+        if q in hay:
+            results.append({
+                "Source": "Tournée actuelle",
+                "Date": rr.get("date_rdv", ""),
+                "Heure": fmt_time(rr.get("heure_rdv", "")),
+                "Client": rr.get("nom_prospect", ""),
+                "Téléphone": rr.get("telephone", ""),
+                "Adresse": rr.get("adresse_complete", ""),
+                "Téléprospecteur": rr.get("teleprospecteur", ""),
+                "Statut": "",
+                "Commentaire": "",
+            })
+    # Historique CRM
+    crm_search_df = load_crm_history()
+    if not crm_search_df.empty:
+        for _, rr in crm_search_df.iterrows():
+            hay = " ".join([str(rr.get(c, "")) for c in crm_columns()]).lower()
+            if q in hay:
+                results.append({
+                    "Source": "Historique CRM",
+                    "Date": rr.get("date_rdv", ""),
+                    "Heure": rr.get("heure_rdv", ""),
+                    "Client": rr.get("client", ""),
+                    "Téléphone": rr.get("telephone", ""),
+                    "Adresse": rr.get("adresse", ""),
+                    "Téléprospecteur": rr.get("teleprospecteur", ""),
+                    "Statut": rr.get("statut", ""),
+                    "Commentaire": rr.get("commentaire", ""),
+                })
+    if results:
+        res_df = pd.DataFrame(results).drop_duplicates()
+        st.dataframe(res_df, use_container_width=True, hide_index=True)
+        for i, rr in res_df.head(10).iterrows():
+            with st.container(border=True):
+                st.markdown(f"**{rr.get('Client','')}** · {rr.get('Date','')} {rr.get('Heure','')} · {rr.get('Statut','')}")
+                st.caption(f"{rr.get('Adresse','')} · Téléprospecteur : {rr.get('Téléprospecteur','')}")
+                if rr.get("Commentaire"):
+                    st.markdown(rr.get("Commentaire"))
+                tel_digits = re.sub(r"\D", "", str(rr.get("Téléphone", "")))
+                c_a, c_b = st.columns(2)
+                if tel_digits:
+                    c_a.link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
+                c_b.link_button("🗺️ Adresse", google_maps_link(rr.get("Adresse", "")), use_container_width=True)
+    else:
+        st.info("Aucun résultat trouvé.")
+
 st.subheader("📋 Mode terrain")
 for _, r in route_df.iterrows():
     pause = r.get('pause_avant_rdv_min', '')
@@ -1352,6 +1451,10 @@ for _, r in route_df.iterrows():
                 rappel_date = st.date_input("Date de rappel", value=prev_rappel_date or date.today(), key=f"rdate_{abs(hash(key))}")
             with rr2:
                 rappel_time = st.time_input("Heure de rappel", value=prev_rappel_time or dtime(9,0), key=f"rtime_{abs(hash(key))}")
+        # V20 : sauvegarde automatique dès qu'un statut, commentaire ou rappel est saisi.
+        if statut or str(commentaire).strip() or rappel_date or rappel_time:
+            save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time)
+            st.caption("💾 Sauvegarde automatique active")
         if st.button("💾 Enregistrer compte rendu", key=f"savecrm_{abs(hash(key))}"):
             save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time)
             st.success("Compte rendu enregistré.")
@@ -1395,12 +1498,12 @@ if not current_register_base.empty:
 with st.expander("⚙️ Paramètres de la note IK", expanded=False):
     a,b,c = st.columns(3)
     with a:
-        beneficiaire = st.text_input("Bénéficiaire", value="Mr Dahan")
-        societe = st.text_input("Société à facturer / rembourser", value="")
+        beneficiaire = st.text_input("Bénéficiaire", value=settings.get("beneficiaire", "Mr Dahan"))
+        societe = st.text_input("Société à facturer / rembourser", value=settings.get("societe", ""))
         periode = st.text_input("Libellé période", value=datetime.now().strftime("%B %Y"))
     with b:
-        vehicule = st.text_input("Véhicule", value="")
-        immat = st.text_input("Immatriculation", value="")
+        vehicule = st.text_input("Véhicule", value=settings.get("vehicule", ""))
+        immat = st.text_input("Immatriculation", value=settings.get("immat", ""))
         cv = st.selectbox("Puissance fiscale", options=[3,4,5,6,7], index=[3,4,5,6,7].index(st.session_state.get("sidebar_cv", 7)), help="7 = 7 CV et plus")
     with c:
         electric = st.checkbox("Véhicule 100% électrique (+20%)", value=st.session_state.get("sidebar_electric", False))
@@ -1409,6 +1512,10 @@ with st.expander("⚙️ Paramètres de la note IK", expanded=False):
 
     custom_bareme_enabled = st.checkbox("Afficher / modifier le barème IK", value=False)
     custom_bareme = custom_bareme_from_inputs("ik_custom") if custom_bareme_enabled else IK_BAREME_2026
+    save_app_settings({
+        "beneficiaire": beneficiaire, "societe": societe, "vehicule": vehicule, "immat": immat,
+        "sidebar_cv": int(cv), "sidebar_electric": bool(electric), "sidebar_return_ik": bool(include_return_ik),
+    })
 
 with st.expander("📚 Historique / facturation IK", expanded=True):
     h1, h2, h3 = st.columns([1,1,2])
@@ -1485,4 +1592,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("V19 : V18 stable + forfait IK interne + période personnalisée + comptes rendus RDV + rappels. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
+st.caption("V20 : V19 stable + sauvegarde auto CRM + recherche globale. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
