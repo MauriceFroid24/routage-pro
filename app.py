@@ -1,6 +1,7 @@
 import io
 import re
 import math
+import json
 from pathlib import Path
 from datetime import datetime, date, time as dtime, timedelta
 from urllib.parse import quote_plus
@@ -20,12 +21,14 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V18", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V19", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
 LAST_UPLOAD_PATH = Path("/tmp/routage_pro_dernier_fichier.xlsx")
 IK_HISTORY_DIR = Path("/tmp/routage_pro_ik_history")
+APP_STATE_PATH = Path("/tmp/routage_pro_v19_settings.json")
+CRM_HISTORY_PATH = Path("/tmp/routage_pro_v19_crm.csv")
 
 COLS = {
     "numero_rdv": 0, "adresse": 1, "code_postal": 2, "date_rdv": 3, "heure_debut": 4,
@@ -33,8 +36,8 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V18 — terrain + IK mensuel")
-st.caption("Mode sombre lisible · carte claire · calcul automatique · module indemnités kilométriques PDF")
+st.title("🚗 Routage PRO V19 — terrain + IK + rappels")
+st.caption("Mode sombre lisible · carte claire · calcul automatique · IK paramétrable · comptes rendus RDV · rappels")
 
 st.markdown("""
 <style>
@@ -760,6 +763,82 @@ def to_minutes(value, default=0):
     except Exception:
         return default
 
+
+def load_app_settings():
+    try:
+        if APP_STATE_PATH.exists():
+            return json.loads(APP_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def save_app_settings(data):
+    try:
+        APP_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def crm_key(row):
+    d = row.get("date_rdv", "")
+    d_txt = d.isoformat() if isinstance(d, date) else str(d or "")
+    return "|".join([d_txt, str(row.get("heure_rdv", "")), str(row.get("nom_prospect", "")), str(row.get("telephone_tel", "")), str(row.get("adresse_complete", ""))])
+
+
+def load_crm_history():
+    if not CRM_HISTORY_PATH.exists():
+        return pd.DataFrame(columns=["key", "date_rdv", "heure_rdv", "client", "telephone", "adresse", "statut", "commentaire", "date_rappel", "heure_rappel", "created_at", "updated_at"])
+    try:
+        return pd.read_csv(CRM_HISTORY_PATH, sep=";", dtype=str).fillna("")
+    except Exception:
+        return pd.DataFrame(columns=["key", "date_rdv", "heure_rdv", "client", "telephone", "adresse", "statut", "commentaire", "date_rappel", "heure_rappel", "created_at", "updated_at"])
+
+
+def save_crm_record(key, row, statut, commentaire, rappel_date=None, rappel_time=None):
+    hist = load_crm_history()
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    d = row.get("date_rdv", "")
+    d_txt = d.strftime("%d/%m/%Y") if isinstance(d, date) else str(d or "")
+    t_txt = fmt_time(row.get("heure_rdv"))
+    record = {
+        "key": key,
+        "date_rdv": d_txt,
+        "heure_rdv": t_txt,
+        "client": row.get("nom_prospect", ""),
+        "telephone": row.get("telephone", ""),
+        "adresse": row.get("adresse_complete", ""),
+        "statut": statut or "",
+        "commentaire": commentaire or "",
+        "date_rappel": rappel_date.strftime("%d/%m/%Y") if isinstance(rappel_date, date) else str(rappel_date or ""),
+        "heure_rappel": fmt_time(rappel_time) if isinstance(rappel_time, dtime) else str(rappel_time or ""),
+        "created_at": now,
+        "updated_at": now,
+    }
+    if hist.empty or key not in hist.get("key", pd.Series(dtype=str)).astype(str).tolist():
+        hist = pd.concat([hist, pd.DataFrame([record])], ignore_index=True)
+    else:
+        idx = hist.index[hist["key"].astype(str) == key]
+        created = hist.loc[idx[0], "created_at"] if len(idx) else now
+        record["created_at"] = created
+        for k, v in record.items():
+            hist.loc[idx, k] = v
+    try:
+        hist.to_csv(CRM_HISTORY_PATH, index=False, sep=";", encoding="utf-8-sig")
+    except Exception:
+        pass
+
+
+def reminder_datetime(row):
+    try:
+        d = pd.to_datetime(row.get("date_rappel", ""), dayfirst=True, errors="coerce")
+        if pd.isna(d):
+            return None
+        t = parse_time(row.get("heure_rappel", "")) or dtime(9,0)
+        return datetime.combine(d.date(), t)
+    except Exception:
+        return None
+
 def save_last_uploaded(uploaded_file):
     try:
         data = uploaded_file.getvalue()
@@ -890,19 +969,32 @@ def add_ik_amounts_to_register(register_df, total_amount=0.0):
     return out
 
 
-def add_ik_amounts_to_route(route_df, return_row, cv=7, electric=False, bareme=None, include_return=True):
+def calc_ik_amount_flexible(km, cv=7, electric=False, bareme=None, mode="auto", manual_rate=0.47):
+    d = max(0.0, float(km or 0))
+    if mode == "manuel":
+        rate = max(0.0, float(manual_rate or 0))
+        return round(d * rate, 2), f"Forfait interne : {rate:.3f} €/km"
+    return calc_ik_amount(d, cv=cv, electric=electric, bareme=bareme)
+
+
+def add_ik_amounts_to_route(route_df, return_row, cv=7, electric=False, bareme=None, include_return=True, mode="auto", manual_rate=0.47):
     """Ajoute une estimation IK par trajet dans la tournée affichée.
-    Le montant total est calculé selon le barème, puis ventilé au prorata des kilomètres.
+    En mode manuel, chaque trajet utilise directement le forfait interne choisi.
+    En mode auto, le montant total barème est ventilé au prorata des kilomètres.
     """
     out = route_df.copy()
     reg = build_ik_register(out, return_row, include_return=include_return)
     total_km = float(pd.to_numeric(reg.get("Km", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if not reg.empty else 0.0
-    total_amount, formula = calc_ik_amount(total_km, cv=cv, electric=electric, bareme=bareme)
+    total_amount, formula = calc_ik_amount_flexible(total_km, cv=cv, electric=electric, bareme=bareme, mode=mode, manual_rate=manual_rate)
     km_route = pd.to_numeric(out.get("distance_depuis_precedent_km", pd.Series(dtype=float)), errors="coerce").fillna(0)
-    out["ik_montant_trajet"] = (km_route / total_km * total_amount).round(2) if total_km > 0 else 0.0
+    if mode == "manuel":
+        out["ik_montant_trajet"] = (km_route * float(manual_rate or 0)).round(2)
+    else:
+        out["ik_montant_trajet"] = (km_route / total_km * total_amount).round(2) if total_km > 0 else 0.0
     ret_amount = 0.0
-    if include_return and return_row and total_km > 0:
-        ret_amount = round(to_float(return_row.get("distance_depuis_precedent_km")) / total_km * total_amount, 2)
+    if include_return and return_row:
+        ret_km = to_float(return_row.get("distance_depuis_precedent_km"))
+        ret_amount = round(ret_km * float(manual_rate or 0), 2) if mode == "manuel" else (round(ret_km / total_km * total_amount, 2) if total_km > 0 else 0.0)
     return out, ret_amount, total_amount, formula
 
 
@@ -988,7 +1080,7 @@ def create_ik_pdf(register_df, params):
     normal = ParagraphStyle('IKNormal', parent=styles['Normal'], fontSize=9, leading=12)
     story = []
     story.append(Paragraph("Note de frais — Indemnités kilométriques", title_style))
-    story.append(Paragraph("Document généré depuis l’application Routage PRO V18", small))
+    story.append(Paragraph("Document généré depuis l’application Routage PRO V19", small))
     story.append(Spacer(1, 0.25*cm))
     info = [
         ["Bénéficiaire", params.get('beneficiaire','Mr Dahan'), "Société", params.get('societe','')],
@@ -1065,22 +1157,32 @@ def create_ik_pdf(register_df, params):
 def df_to_csv_bytes(df):
     return df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
 
+settings = load_app_settings()
 with st.sidebar:
     st.header("Réglages")
-    start_address = st.text_input("Adresse de départ / retour", value=DEFAULT_START)
-    safety_min = st.number_input("Marge sécurité avant RDV", min_value=0, max_value=60, value=15, step=5)
-    visit_min = st.number_input("Durée moyenne d'un RDV", min_value=15, max_value=240, value=150, step=15)
-    use_google = st.checkbox("Utiliser Google trafic / Street View si j'ai une clé API", value=False)
-    google_key = st.text_input("Clé Google Maps API (optionnel)", type="password") if use_google else ""
+    start_address = st.text_input("Adresse de départ / retour", value=settings.get("start_address", DEFAULT_START))
+    safety_min = st.number_input("Marge sécurité avant RDV", min_value=0, max_value=60, value=int(settings.get("safety_min", 15)), step=5)
+    visit_min = st.number_input("Durée moyenne d'un RDV", min_value=15, max_value=240, value=int(settings.get("visit_min", 150)), step=15)
+    use_google = st.checkbox("Utiliser Google trafic / Street View si j'ai une clé API", value=bool(settings.get("use_google", False)))
+    google_key = st.text_input("Clé Google Maps API (optionnel)", value=settings.get("google_key", ""), type="password") if use_google else ""
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
     auto_reload = st.checkbox("Recharger automatiquement le dernier Excel de la journée", value=True)
     st.divider()
     st.subheader("💰 Réglages IK rapides")
-    sidebar_cv = st.selectbox("Puissance fiscale IK", options=[3,4,5,6,7], index=4, help="7 = 7 CV et plus", key="sidebar_cv")
-    sidebar_electric = st.checkbox("Véhicule 100% électrique IK (+20%)", value=False, key="sidebar_electric")
-    sidebar_include_return = st.checkbox("Inclure retour base dans IK", value=True, key="sidebar_return_ik")
-    st.info("V18 : V17 stable + historique mensuel IK + barème paramétrable + IK par trajet.")
+    sidebar_cv = st.selectbox("Puissance fiscale IK", options=[3,4,5,6,7], index=[3,4,5,6,7].index(int(settings.get("sidebar_cv", 7))), help="7 = 7 CV et plus", key="sidebar_cv")
+    sidebar_electric = st.checkbox("Véhicule 100% électrique IK (+20%)", value=bool(settings.get("sidebar_electric", False)), key="sidebar_electric")
+    sidebar_include_return = st.checkbox("Inclure retour base dans IK", value=bool(settings.get("sidebar_return_ik", True)), key="sidebar_return_ik")
+    ik_mode_label = st.radio("Mode de calcul IK", ["Barème officiel", "Forfait interne €/km"], index=1 if settings.get("ik_mode", "manuel") == "manuel" else 0)
+    sidebar_ik_mode = "manuel" if ik_mode_label.startswith("Forfait") else "auto"
+    sidebar_manual_rate = st.number_input("Forfait interne €/km", min_value=0.0, max_value=2.0, value=float(settings.get("manual_rate", 0.47)), step=0.01, format="%.3f", disabled=(sidebar_ik_mode != "manuel"))
+    save_app_settings({
+        "start_address": start_address, "safety_min": int(safety_min), "visit_min": int(visit_min),
+        "use_google": bool(use_google), "google_key": google_key, "sidebar_cv": int(sidebar_cv),
+        "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
+        "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
+    })
+    st.info("V19 : V18 stable + IK manuel/auto + compte rendu RDV + rappels.")
 
 source_file = None
 source_label = ""
@@ -1143,6 +1245,8 @@ route_df, return_ik_amount, current_ik_total, current_ik_formula = add_ik_amount
     cv=st.session_state.get("sidebar_cv", 7),
     electric=st.session_state.get("sidebar_electric", False),
     include_return=st.session_state.get("sidebar_return_ik", True),
+    mode=sidebar_ik_mode,
+    manual_rate=sidebar_manual_rate,
 )
 
 distance_series = pd.to_numeric(route_df.get("distance_depuis_precedent_km"), errors="coerce").fillna(0)
@@ -1184,6 +1288,28 @@ st.dataframe(display_df, use_container_width=True, hide_index=True)
 if return_row:
     st.info(f"Retour base inclus : {return_row.get('distance_depuis_precedent_km','')} km · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))}")
 
+
+# Rappels visibles en haut du mode terrain
+crm_df = load_crm_history()
+if not crm_df.empty:
+    crm_df["_rappel_dt"] = crm_df.apply(reminder_datetime, axis=1)
+    now_dt = datetime.now()
+    reminders = crm_df[(crm_df.get("statut", "") == "À rappeler") & crm_df["_rappel_dt"].notna()].copy()
+    reminders = reminders.sort_values("_rappel_dt")
+    due = reminders[reminders["_rappel_dt"] <= now_dt + timedelta(days=7)]
+    if not due.empty:
+        st.subheader("🔔 Rappels à faire")
+        for _, rr in due.head(10).iterrows():
+            delay = "🔴 dépassé" if rr["_rappel_dt"] < now_dt else "🟡 à venir"
+            with st.container(border=True):
+                st.markdown(f"**{delay} — {rr['client']}** · {rr.get('date_rappel','')} {rr.get('heure_rappel','')}")
+                st.markdown(f"{rr.get('commentaire','')}")
+                cols_rem = st.columns(2)
+                tel_digits = re.sub(r"\D", "", str(rr.get("telephone", "")))
+                if tel_digits:
+                    cols_rem[0].link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
+                cols_rem[1].link_button("🗺️ Adresse", google_maps_link(rr.get("adresse", "")), use_container_width=True)
+
 st.subheader("📋 Mode terrain")
 for _, r in route_df.iterrows():
     pause = r.get('pause_avant_rdv_min', '')
@@ -1203,6 +1329,32 @@ for _, r in route_df.iterrows():
             st.link_button("🏠 Voir maison", r.get('street_view', '#'), use_container_width=True)
             if r.get('telephone_tel'):
                 st.link_button("📞 Appeler", f"tel:{r.get('telephone_tel')}", use_container_width=True)
+        st.divider()
+        key = crm_key(r)
+        crm_hist = load_crm_history()
+        previous = crm_hist[crm_hist["key"].astype(str) == key].tail(1) if not crm_hist.empty else pd.DataFrame()
+        prev_statut = previous.iloc[0].get("statut", "") if not previous.empty else ""
+        prev_comment = previous.iloc[0].get("commentaire", "") if not previous.empty else ""
+        prev_rappel_date = parse_date(previous.iloc[0].get("date_rappel", "")) if not previous.empty else None
+        prev_rappel_time = parse_time(previous.iloc[0].get("heure_rappel", "")) if not previous.empty else None
+        statuses = ["", "Signé", "Veut réfléchir", "Absent", "Négatif", "À rappeler", "VT à planifier", "À revoir"]
+        sidx = statuses.index(prev_statut) if prev_statut in statuses else 0
+        cr1, cr2 = st.columns([1,2])
+        with cr1:
+            statut = st.selectbox("Statut fin RDV", statuses, index=sidx, key=f"statut_{abs(hash(key))}")
+        with cr2:
+            commentaire = st.text_area("Commentaire fin RDV", value=prev_comment, key=f"comment_{abs(hash(key))}", height=80)
+        rappel_date = None
+        rappel_time = None
+        if statut == "À rappeler":
+            rr1, rr2 = st.columns(2)
+            with rr1:
+                rappel_date = st.date_input("Date de rappel", value=prev_rappel_date or date.today(), key=f"rdate_{abs(hash(key))}")
+            with rr2:
+                rappel_time = st.time_input("Heure de rappel", value=prev_rappel_time or dtime(9,0), key=f"rtime_{abs(hash(key))}")
+        if st.button("💾 Enregistrer compte rendu", key=f"savecrm_{abs(hash(key))}"):
+            save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time)
+            st.success("Compte rendu enregistré.")
 
 st.subheader("🗺️ Carte générale")
 nb_routes = sum(1 for _, rr in route_df.iterrows() if isinstance(rr.get("route_geometry", []), list) and len(rr.get("route_geometry", [])) >= 2)
@@ -1253,17 +1405,18 @@ with st.expander("⚙️ Paramètres de la note IK", expanded=False):
     with c:
         electric = st.checkbox("Véhicule 100% électrique (+20%)", value=st.session_state.get("sidebar_electric", False))
         include_return_ik = st.checkbox("Inclure le retour à la base", value=st.session_state.get("sidebar_return_ik", True))
-        st.info("Le montant par trajet est une ventilation au prorata. Le barème officiel reste calculé sur le total de la période.")
+        st.info("Mode appliqué : " + (f"forfait interne {sidebar_manual_rate:.3f} €/km" if sidebar_ik_mode == "manuel" else "barème officiel paramétrable"))
 
     custom_bareme_enabled = st.checkbox("Afficher / modifier le barème IK", value=False)
     custom_bareme = custom_bareme_from_inputs("ik_custom") if custom_bareme_enabled else IK_BAREME_2026
 
-with st.expander("📚 Historique mensuel IK", expanded=True):
+with st.expander("📚 Historique / facturation IK", expanded=True):
     h1, h2, h3 = st.columns([1,1,2])
+    today = date.today()
     with h1:
-        selected_month = st.selectbox("Mois", options=list(range(1,13)), index=datetime.now().month-1, format_func=lambda m: f"{m:02d}")
+        period_start = st.date_input("Période du", value=date(today.year, today.month, 1))
     with h2:
-        selected_year = st.number_input("Année", min_value=2024, max_value=2035, value=datetime.now().year, step=1)
+        period_end = st.date_input("Au", value=today)
     with h3:
         uploaded_history = st.file_uploader("Ajouter un registre IK CSV ancien si besoin", type=["csv"], key="ik_history_upload")
 
@@ -1285,7 +1438,13 @@ with st.expander("📚 Historique mensuel IK", expanded=True):
             st.warning(f"Registre ajouté illisible : {e}")
 
     all_register = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    monthly_register = filter_register_by_period(all_register, selected_month, int(selected_year))
+    
+    if not all_register.empty and "Date" in all_register.columns:
+        tmp = all_register.copy()
+        parsed = pd.to_datetime(tmp["Date"], dayfirst=True, errors="coerce")
+        monthly_register = tmp[(parsed.dt.date >= period_start) & (parsed.dt.date <= period_end)].copy()
+    else:
+        monthly_register = pd.DataFrame()
     if not monthly_register.empty:
         # Déduplique les lignes principales pour éviter les doublons de la journée actuelle + historique.
         dedup_cols = [c for c in ["Date", "Objet", "Arrivée", "Km", "Justificatif"] if c in monthly_register.columns]
@@ -1295,7 +1454,7 @@ with st.expander("📚 Historique mensuel IK", expanded=True):
 ik_register = monthly_register if 'monthly_register' in locals() and not monthly_register.empty else current_register_base
 ik_register = ik_register.copy()
 total_ik_km = float(pd.to_numeric(ik_register.get("Km", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if not ik_register.empty else 0.0
-ik_amount, ik_formula = calc_ik_amount(total_ik_km, cv=cv, electric=electric, bareme=custom_bareme)
+ik_amount, ik_formula = calc_ik_amount_flexible(total_ik_km, cv=cv, electric=electric, bareme=custom_bareme, mode=sidebar_ik_mode, manual_rate=sidebar_manual_rate)
 ik_register = add_ik_amounts_to_register(ik_register, ik_amount)
 
 k1,k2,k3,k4 = st.columns(4)
@@ -1326,4 +1485,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("V18 : V17 stable + historique mensuel IK + montant IK par trajet + barèmes paramétrables. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
+st.caption("V19 : V18 stable + forfait IK interne + période personnalisée + comptes rendus RDV + rappels. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
