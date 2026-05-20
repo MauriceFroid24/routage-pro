@@ -1351,7 +1351,7 @@ if not crm_df.empty:
                 tel_digits = re.sub(r"\D", "", str(rr.get("telephone", "")))
                 if tel_digits:
                     cols_rem[0].link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
-                cols_rem[1].link_button("🗺️ Adresse", google_maps_link(rr.get("adresse", "")), use_container_width=True)
+                cols_rem[1].link_button("🗺️ Adresse", maps_link(rr.get("adresse", "")), use_container_width=True)
 
 
 # Recherche globale CRM + tournée courante
@@ -1405,7 +1405,7 @@ if search_q.strip():
                 c_a, c_b = st.columns(2)
                 if tel_digits:
                     c_a.link_button("📞 Appeler", f"tel:{tel_digits}", use_container_width=True)
-                c_b.link_button("🗺️ Adresse", google_maps_link(rr.get("Adresse", "")), use_container_width=True)
+                c_b.link_button("🗺️ Adresse", maps_link(rr.get("Adresse", "")), use_container_width=True)
     else:
         st.info("Aucun résultat trouvé.")
 
