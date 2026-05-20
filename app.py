@@ -54,7 +54,7 @@ COLS = {
     "commercial_prenom": 12, "prenom": 13, "telepros_prenom": 14, "telephone": 16, "ville": 17,
 }
 
-st.title("🚗 Routage PRO V20 — terrain + IK + CRM persistant + recherche")
+st.title("🚗 Routage PRO V20.2 — terrain + IK + CRM persistant + recherche")
 st.caption("Mode sombre lisible · carte claire · IK paramétrable · sauvegarde auto CRM · rappels · recherche globale")
 
 st.markdown("""
@@ -67,7 +67,7 @@ st.markdown("""
     background-color:#0f1115;
 }
 .block-container {
-    padding-top: 1.2rem;
+    padding-top: 4.8rem;
 }
 .stAlert {
     border-radius:14px;
@@ -111,6 +111,11 @@ hr {
     background: #050505 !important;
     color: #ffffff !important;
     border-bottom: 1px solid #1f1f1f !important;
+    height: 3.4rem !important;
+}
+/* Evite que le bandeau Streamlit coupe le titre sur PC */
+header[data-testid="stHeader"] + div {
+    padding-top: 0.5rem !important;
 }
 [data-testid="stToolbar"] {
     background: transparent !important;
@@ -147,6 +152,12 @@ hr {
     fill: #ffffff !important;
     color: #ffffff !important;
 }
+
+/* V20.2 — garde le scroll iPhone fluide quand la carte est verrouillée */
+.map-scroll-safe iframe {
+    pointer-events: none !important;
+}
+
 /* Force les textes Streamlit à rester lisibles sur PC */
 .stMarkdown, .stMarkdown p, .stMarkdown span, label, div[data-testid="stText"] {
     color: #f5f5f5 !important;
@@ -567,7 +578,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
     return route_df, return_row, geo.get(start_address, {})
 
 
-def make_map(df, return_row, start_address, start_geo):
+def make_map(df, return_row, start_address, start_geo, interactive=True):
     map_df = df.copy()
     if return_row:
         map_df = pd.concat([map_df, pd.DataFrame([return_row])], ignore_index=True)
@@ -578,7 +589,16 @@ def make_map(df, return_row, start_address, start_geo):
         center = [start_geo["lat"], start_geo["lon"]]
     else:
         center = [48.79, 2.53]
-    m = folium.Map(location=center, zoom_start=11, tiles="OpenStreetMap")
+    m = folium.Map(
+        location=center,
+        zoom_start=11,
+        tiles="OpenStreetMap",
+        dragging=interactive,
+        scrollWheelZoom=interactive,
+        touchZoom=interactive,
+        doubleClickZoom=interactive,
+        zoom_control=True,
+    )
     points = []
     if start_geo.get("lat") and start_geo.get("lon"):
         folium.Marker([start_geo["lat"], start_geo["lon"]], tooltip="Départ / retour", popup=start_address, icon=folium.Icon(color="green", icon="home")).add_to(m)
@@ -1225,7 +1245,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V20 : V19 stable + sauvegarde CRM auto + recherche globale.")
+    st.info("V20.2 : V20.1 stable + correctif affichage CRM auto + recherche globale.")
 
 source_file = None
 source_label = ""
@@ -1467,8 +1487,18 @@ if nb_routes == 0:
     st.warning("Aucun tracé routier disponible pour l’instant. Vérifie la connexion ou les adresses. Les calculs peuvent quand même apparaître si les coordonnées sont trouvées.")
 else:
     st.success(f"{nb_routes} trajet(s) routier(s) tracé(s) sur la carte.")
+map_interactive = st.toggle(
+    "Activer déplacement / zoom sur la carte",
+    value=False,
+    help="Désactivé par défaut pour que le scroll iPhone fasse défiler l’application au lieu de bouger la carte."
+)
+if not map_interactive:
+    st.caption("📱 Carte verrouillée : le scroll iPhone fait défiler l’application. Active le bouton ci-dessus si tu veux déplacer/zoomer la carte.")
+    st.markdown("""<style>iframe[title="streamlit_folium.st_folium"]{pointer-events:none!important;}</style>""", unsafe_allow_html=True)
+else:
+    st.caption("🗺️ Carte interactive activée : tu peux zoomer/déplacer la carte.")
 try:
-    st_folium(make_map(route_df, return_row, start_address, start_geo), height=650, use_container_width=True)
+    st_folium(make_map(route_df, return_row, start_address, start_geo, interactive=map_interactive), height=650, use_container_width=True)
 except Exception as e:
     st.warning(f"Carte non disponible : {e}")
 
@@ -1592,4 +1622,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("V20 : V19 stable + sauvegarde auto CRM + recherche globale. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
+st.caption("V20.2 : V20.1 stable + correctif affichage auto CRM + recherche globale. Sans clé Google, le trafic est une estimation prudente. Les tracés routiers utilisent OSRM gratuit quand les coordonnées sont trouvées.")
