@@ -1,14 +1,16 @@
-# Routage PRO V17
+# Routage PRO V18
 
-Base V16 stable + module Indemnités Kilométriques.
+Base V17 conservée + module Indemnités Kilométriques mensuel.
 
-## Nouveautés V17
-- Ajout d'un module `Indemnités kilométriques` sans modifier le fonctionnement de la tournée.
-- Paramètres : bénéficiaire, société, période, véhicule, immatriculation, CV fiscaux, véhicule électrique.
-- Génération d'un PDF professionnel de note de frais IK.
-- Génération d'un registre CSV comptable.
-- Possibilité de revenir à la V16.3 en ré-uploadant le ZIP V16.3 sur GitHub.
+## Nouveautés V18
+- Historique IK local des journées calculées.
+- Génération d'une note IK mensuelle PDF professionnelle.
+- Export CSV mensuel du registre IK.
+- Montant IK estimé par trajet dans le mode terrain.
+- Barème IK paramétrable depuis l'application.
+- Bénéficiaire par défaut : Mr Dahan.
 
-## Important comptabilité
-Le barème intégré est le barème kilométrique 2026 pour les revenus 2025, voitures thermiques/hybrides/hydrogène, avec majoration 20% pour véhicule 100% électrique.
-À valider avec le comptable selon le montage exact de remboursement/facturation.
+## Important
+La V18 est séparée : pour revenir à la V17 ou V16.3, il suffit de ré-uploader l'ancien ZIP sur GitHub.
+
+L'historique local Streamlit peut disparaître si l'application redémarre sur le cloud. Pour un archivage durable, télécharge le registre CSV mensuel.
