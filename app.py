@@ -1,4 +1,6 @@
 import io
+import zipfile
+import xml.etree.ElementTree as ET
 import re
 import math
 import json
@@ -31,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.0 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -116,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO — V28.0 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.1 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -260,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.0 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.1 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -1253,16 +1255,43 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key, 
 
 
 
-RADARS_CSV_URL = "https://www.data.gouv.fr/api/1/datasets/r/17f7cfd9-a5fe-4b6a-9f5d-3625feaa396e"
+RADARS_DATASET_SLUG = "liste-des-radars-fixes-en-france"
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def load_fixed_radars():
-    """Charge le jeu public des radars fixes et normalise lat/lon/type/VMA."""
+    """Charge dynamiquement le CSV le plus récent du jeu officiel data.gouv.fr."""
     try:
-        r = requests.get(RADARS_CSV_URL, timeout=20)
-        r.raise_for_status()
-        raw = pd.read_csv(io.BytesIO(r.content), sep=None, engine="python")
-        if raw.empty:
+        meta_url = f"https://www.data.gouv.fr/api/1/datasets/{RADARS_DATASET_SLUG}/"
+        meta = requests.get(meta_url, timeout=15)
+        meta.raise_for_status()
+        dataset = meta.json()
+
+        resources = dataset.get("resources", [])
+        csv_resources = [
+            r for r in resources
+            if str(r.get("format", "")).lower() == "csv" and r.get("url")
+        ]
+        if not csv_resources:
+            return pd.DataFrame(columns=["lat","lon","type","vma","id"])
+
+        csv_resources.sort(
+            key=lambda r: str(r.get("last_modified") or r.get("latest") or ""),
+            reverse=True
+        )
+        resource_url = csv_resources[0]["url"]
+
+        resp = requests.get(resource_url, timeout=20)
+        resp.raise_for_status()
+
+        raw = None
+        for enc in ["utf-8-sig", "utf-8", "latin-1"]:
+            try:
+                raw = pd.read_csv(io.BytesIO(resp.content), sep=None, engine="python", encoding=enc)
+                if raw is not None and not raw.empty:
+                    break
+            except Exception:
+                raw = None
+        if raw is None or raw.empty:
             return pd.DataFrame(columns=["lat","lon","type","vma","id"])
 
         norm = {_norm_col_name(c): c for c in raw.columns}
@@ -1281,11 +1310,10 @@ def load_fixed_radars():
 
         lat_col = find_col(["latitude","lat"])
         lon_col = find_col(["longitude","lon","lng"])
-        type_col = find_col(["type","type radar","type_de_radar"])
-        vma_col = find_col(["vma","vitesse","vitesse maximale autorisee"])
-        id_col = find_col(["id","identifiant","id radar"])
+        type_col = find_col(["type","type radar","type_de_radar","typeequipement"])
+        vma_col = find_col(["vma","vitesse","vitesse maximale autorisee","vitessemaximaleautorisee"])
+        id_col = find_col(["id","identifiant","id radar","idequipement"])
 
-        # Certains exports peuvent avoir une seule colonne de coordonnées.
         if lat_col is None or lon_col is None:
             coord_col = find_col(["coordonnees","coordonnées","geopoint","geo_point_2d","position"])
             if coord_col:
@@ -1307,7 +1335,6 @@ def load_fixed_radars():
             "id": raw[id_col].astype(str) if id_col else "",
         }).dropna(subset=["lat","lon"])
 
-        # Garde-fou France métropolitaine + Corse.
         out = out[
             out["lat"].between(41.0, 51.8)
             & out["lon"].between(-5.5, 10.2)
@@ -1358,6 +1385,119 @@ def radars_near_route(df, return_row=None, current_position=None, margin_deg=0.1
     return subset.head(250).reset_index(drop=True)
 
 
+
+FUEL_REALTIME_URL = "https://donnees.roulez-eco.fr/opendata/instantane"
+
+@st.cache_data(show_spinner=False, ttl=600)
+def load_fuel_stations():
+    """Flux gouvernemental instantané des stations-service et prix carburants."""
+    cols = ["lat","lon","adresse","ville","cp","brand","gazole","sp95","e10","sp98","e85","gplc","updated"]
+    try:
+        r = requests.get(FUEL_REALTIME_URL, timeout=25)
+        r.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            xml_names = [n for n in z.namelist() if n.lower().endswith(".xml")]
+            if not xml_names:
+                return pd.DataFrame(columns=cols)
+            xml_bytes = z.read(xml_names[0])
+
+        root = ET.fromstring(xml_bytes)
+        rows = []
+        for pdv in root.findall(".//pdv"):
+            try:
+                lat = float(pdv.attrib.get("latitude")) / 100000.0
+                lon = float(pdv.attrib.get("longitude")) / 100000.0
+            except Exception:
+                continue
+
+            adresse = (pdv.findtext("adresse") or "").strip()
+            ville = (pdv.findtext("ville") or "").strip()
+            cp = str(pdv.attrib.get("cp", "") or "")
+            brand = ""
+            for possible in ["marque", "enseigne", "nom"]:
+                node = pdv.find(possible)
+                if node is not None and (node.text or "").strip():
+                    brand = (node.text or "").strip()
+                    break
+
+            prices = {}
+            updated = ""
+            for prix in pdv.findall("prix"):
+                fuel_name = str(prix.attrib.get("nom", "") or "").strip().lower()
+                try:
+                    value_f = float(str(prix.attrib.get("valeur")).replace(",", "."))
+                except Exception:
+                    continue
+                updated = max(updated, str(prix.attrib.get("maj", "") or ""))
+                if "gazole" in fuel_name or "diesel" in fuel_name:
+                    prices["gazole"] = value_f
+                elif fuel_name == "sp95":
+                    prices["sp95"] = value_f
+                elif "e10" in fuel_name:
+                    prices["e10"] = value_f
+                elif "sp98" in fuel_name:
+                    prices["sp98"] = value_f
+                elif "e85" in fuel_name:
+                    prices["e85"] = value_f
+                elif "gpl" in fuel_name:
+                    prices["gplc"] = value_f
+
+            rows.append({
+                "lat": lat, "lon": lon, "adresse": adresse, "ville": ville, "cp": cp,
+                "brand": brand, "gazole": prices.get("gazole"), "sp95": prices.get("sp95"),
+                "e10": prices.get("e10"), "sp98": prices.get("sp98"),
+                "e85": prices.get("e85"), "gplc": prices.get("gplc"), "updated": updated,
+            })
+
+        return pd.DataFrame(rows, columns=cols)
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
+def stations_near_route(df, return_row=None, current_position=None, margin_deg=0.11):
+    pts = []
+    for _, rr in df.iterrows():
+        try:
+            pts.append((float(rr.get("lat")), float(rr.get("lon"))))
+        except Exception:
+            pass
+        geom = rr.get("route_geometry", [])
+        if isinstance(geom, list) and geom:
+            step = max(1, len(geom)//25)
+            for p in geom[::step]:
+                try:
+                    pts.append((float(p[0]), float(p[1])))
+                except Exception:
+                    pass
+    if return_row:
+        geom = return_row.get("route_geometry", [])
+        if isinstance(geom, list) and geom:
+            step = max(1, len(geom)//25)
+            for p in geom[::step]:
+                try:
+                    pts.append((float(p[0]), float(p[1])))
+                except Exception:
+                    pass
+    if isinstance(current_position, dict):
+        try:
+            pts.append((float(current_position["latitude"]), float(current_position["longitude"])))
+        except Exception:
+            pass
+    if not pts:
+        return pd.DataFrame()
+
+    all_stations = load_fuel_stations()
+    if all_stations.empty:
+        return all_stations
+
+    lats = [p[0] for p in pts]
+    lons = [p[1] for p in pts]
+    return all_stations[
+        all_stations["lat"].between(min(lats)-margin_deg, max(lats)+margin_deg)
+        & all_stations["lon"].between(min(lons)-margin_deg, max(lons)+margin_deg)
+    ].head(300).reset_index(drop=True)
+
+
 def _html_escape(s):
     return (str(s or "")
             .replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -1365,7 +1505,7 @@ def _html_escape(s):
 
 
 def build_maplibre_html(df, return_row, start_address, start_geo, current_position=None,
-                        show_radars=True, style_name="Liberty"):
+                        show_radars=True, show_fuel=False, fuel_type="gazole", style_name="Liberty"):
     """Carte vectorielle moderne OpenFreeMap/MapLibre."""
     import json
 
@@ -1474,10 +1614,39 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 "geometry":{"type":"Point","coordinates":[float(rd["lon"]),float(rd["lat"])]},
             })
 
+    fuel_features=[]
+    if show_fuel:
+        stations = stations_near_route(df, return_row, current_position)
+        for _, stn in stations.iterrows():
+            try:
+                price = None if pd.isna(stn.get(fuel_type)) else float(stn.get(fuel_type))
+            except Exception:
+                price = None
+            def fv(key):
+                try:
+                    return None if pd.isna(stn.get(key)) else float(stn.get(key))
+                except Exception:
+                    return None
+            fuel_features.append({
+                "type":"Feature",
+                "properties":{
+                    "brand":str(stn.get("brand","") or ""),
+                    "adresse":str(stn.get("adresse","") or ""),
+                    "ville":str(stn.get("ville","") or ""),
+                    "cp":str(stn.get("cp","") or ""),
+                    "price":price,
+                    "updated":str(stn.get("updated","") or ""),
+                    "gazole":fv("gazole"),"sp95":fv("sp95"),"e10":fv("e10"),
+                    "sp98":fv("sp98"),"e85":fv("e85"),"gplc":fv("gplc"),
+                },
+                "geometry":{"type":"Point","coordinates":[float(stn["lon"]),float(stn["lat"])]},
+            })
+
     data = {
         "routes":{"type":"FeatureCollection","features":route_features},
         "stops":{"type":"FeatureCollection","features":stop_features},
         "radars":{"type":"FeatureCollection","features":radar_features},
+        "fuel":{"type":"FeatureCollection","features":fuel_features},
         "labels":route_labels,
         "gps":gps,
         "bounds":bounds_pts,
@@ -1504,6 +1673,9 @@ html,body,#map{{margin:0;width:100%;height:100%;background:#070b14;font-family:-
 .route-pill{{background:rgba(7,11,20,.94);color:#fff;border:1px solid #5e718e;border-radius:12px;padding:6px 9px;box-shadow:0 5px 18px rgba(0,0,0,.35);font-weight:850;font-size:12px;line-height:1.25;white-space:nowrap}}
 .route-pill .sub{{color:#80e8ff;font-weight:900}}
 .radar-marker{{width:34px;height:34px;border-radius:50%;background:#ff293d;border:3px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:950;box-shadow:0 4px 15px rgba(255,41,61,.45)}}
+.fuel-marker{{min-width:40px;height:38px;border-radius:13px;background:#0a8f63;border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:950;box-shadow:0 4px 15px rgba(10,143,99,.42);padding:0 5px}}
+.fuel-price{{font-size:10px;margin-left:3px;font-weight:950}}
+
 .gps-dot{{width:22px;height:22px;border-radius:50%;background:#178bff;border:4px solid #fff;box-shadow:0 0 0 10px rgba(23,139,255,.22),0 0 25px rgba(23,139,255,.55)}}
 .popup-title{{font-size:18px;font-weight:950;margin-bottom:4px}} .popup-client{{font-size:15px;font-weight:850;color:#7ee7ff;margin-bottom:6px}}
 .popup-addr{{font-size:12px;color:#cbd5e1;margin-bottom:10px}}
@@ -1570,6 +1742,21 @@ map.on("load",()=>{{
     if(p.type) details+=`<div class="popup-client">${{esc(p.type)}}</div>`;
     if(p.vma && p.vma!=="nan") details+=`<div class="popup-route">Limitation : <b>${{esc(p.vma)}} km/h</b></div>`;
     new maplibregl.Marker({{element:el,anchor:"center"}}).setLngLat(c).setPopup(new maplibregl.Popup({{offset:20}}).setHTML(details)).addTo(map);
+  }});
+
+  DATA.fuel.features.forEach(f=>{{
+    const p=f.properties,c=f.geometry.coordinates,el=document.createElement("div");
+    el.className="fuel-marker";
+    const price=(p.price!==null&&p.price!==undefined)?Number(p.price).toFixed(3):"";
+    el.innerHTML=price?`⛽<span class="fuel-price">${{price}}€</span>`:"⛽";
+    let title=p.brand?esc(p.brand):"Station-service";
+    let details=`<div class="popup-title">⛽ ${{title}}</div>`;
+    const addr=[p.adresse,p.cp,p.ville].filter(Boolean).join(" ");
+    if(addr) details+=`<div class="popup-addr">${{esc(addr)}}</div>`;
+    const fuels=[["Gazole",p.gazole],["SP95",p.sp95],["E10",p.e10],["SP98",p.sp98],["E85",p.e85],["GPLc",p.gplc]].filter(x=>x[1]!==null&&x[1]!==undefined);
+    if(fuels.length) details+=`<div class="popup-route">${{fuels.map(x=>`${{x[0]}} : <b>${{Number(x[1]).toFixed(3)}} €/L</b>`).join("<br>")}}</div>`;
+    if(p.updated) details+=`<div style="font-size:10px;color:#94a3b8">Mise à jour : ${{esc(p.updated)}}</div>`;
+    new maplibregl.Marker({{element:el,anchor:"center"}}).setLngLat(c).setPopup(new maplibregl.Popup({{offset:20,maxWidth:"300px"}}).setHTML(details)).addTo(map);
   }});
 
   if(DATA.bounds && DATA.bounds.length){{
@@ -2430,7 +2617,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.0 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.1 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2546,6 +2733,7 @@ st.markdown(
         <div class="cockpit-stats">{" · ".join(summary_bits)}</div>
       </div>
       <div class="live-pills">
+        <span class="live-pill">GDH</span>
         <span class="live-pill ok">● TRAFIC GOOGLE</span>
         <span class="live-pill">GPS</span>
         <span class="live-pill alert">📷 RADARS</span>
@@ -2579,7 +2767,7 @@ with st.expander("📍 Ma position sur la carte", expanded=False):
 
 st.markdown('<div class="map-legend">Carte vectorielle routière · clients · temps · départs · péages · position GPS · radars fixes publics.</div>', unsafe_allow_html=True)
 
-mc1, mc2 = st.columns(2)
+mc1, mc2, mc3 = st.columns(3)
 with mc1:
     map_style = st.selectbox(
         "Style de carte",
@@ -2589,18 +2777,35 @@ with mc1:
         help="Liberty est le style par défaut, lisible et routier."
     )
 with mc2:
-    show_radars = st.toggle(
-        "📷 Radars fixes",
-        value=True,
-        key="show_radars_v28",
-        help="Affiche uniquement les radars fixes issus du jeu public du ministère de l’Intérieur."
+    show_radars = st.toggle("📷 Radars fixes", value=True, key="show_radars_v28")
+with mc3:
+    show_fuel = st.toggle("⛽ Stations-service", value=False, key="show_fuel_v28")
+
+fuel_type = "gazole"
+if show_fuel:
+    fuel_label = st.segmented_control(
+        "Prix affiché sur la carte",
+        options=["Gazole","SP95","E10","SP98","E85","GPLc"],
+        default="Gazole",
+        key="fuel_type_v28"
     )
+    fuel_type = {"Gazole":"gazole","SP95":"sp95","E10":"e10","SP98":"sp98","E85":"e85","GPLc":"gplc"}.get(fuel_label or "Gazole","gazole")
+
+layer_status=[]
+if show_radars:
+    layer_status.append(f"📷 {len(radars_near_route(route_df, return_row, current_position))} radar(s)")
+if show_fuel:
+    layer_status.append(f"⛽ {len(stations_near_route(route_df, return_row, current_position))} station(s)")
+if layer_status:
+    st.caption(" · ".join(layer_status))
 
 try:
     map_html = build_maplibre_html(
         route_df, return_row, start_address, start_geo,
         current_position=current_position,
         show_radars=show_radars,
+        show_fuel=show_fuel,
+        fuel_type=fuel_type,
         style_name=map_style,
     )
     components.html(map_html, height=650, scrolling=False)
@@ -3098,4 +3303,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("Routage PRO V28.0 — 28/07/2026 · Cockpit terrain · carte vectorielle · GPS · radars fixes · trafic Google")
+st.caption("Routage PRO · GDH — V28.1 — 28/07/2026 · Cockpit · GPS · radars fixes · stations-service · trafic Google")
