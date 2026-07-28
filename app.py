@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.4 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.4.1.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.4 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.4.1 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.4 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.4.1 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -688,6 +688,24 @@ def french_long_date(d):
     if not isinstance(d, date):
         return ""
     return f"{FR_WEEKDAYS[d.weekday()]} {d.day} {FR_MONTHS[d.month-1]}"
+
+
+def timing_label_for_route(row, row_index=0):
+    """Retourne le texte d'avance/retard sans modifier le calcul de trajet."""
+    try:
+        pause = row.get("pause_avant_rdv_min", "")
+        if row_index > 0 and pause not in ("", None):
+            minutes = int(float(pause))
+            if minutes < 0:
+                return "retard", abs(minutes), f"🔴 Retard {abs(minutes)} min"
+            return "avance", minutes, f"🟢 Avance {minutes} min"
+
+        # Premier trajet : pas de RDV précédent, donc pas de comparaison inter-RDV.
+        # On reste neutre pour éviter un faux calcul basé sur l'heure d'ouverture de l'app.
+        return "ok", 0, "🟢 À l'heure"
+    except Exception:
+        return "ok", 0, "🟢 À l'heure"
+
 
 def find_next_rdv(df):
     if df is None or df.empty:
@@ -1659,10 +1677,17 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 label = f"{fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km · IK {ik_txt}"
                 if toll_txt:
                     label += f" · {toll_txt}"
+                timing_status, timing_min, timing_text = timing_label_for_route(
+                    rr,
+                    int(rr.name) if isinstance(rr.name, int) else 0
+                )
                 route_labels.append({
                     "coords":mid,
                     "line1":label,
                     "line2":f"Départ {fmt_dt(rr.get('depart_conseille'))}",
+                    "timing_status":timing_status,
+                    "timing_min":timing_min,
+                    "timing_text":timing_text,
                 })
 
     if return_row:
@@ -1684,7 +1709,14 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                     toll = ""
                 label=f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km · IK {ik_ret}"
                 if toll: label+=f" · {toll}"
-                route_labels.append({"coords":mid,"line1":label,"line2":"Retour base"})
+                route_labels.append({
+                    "coords":mid,
+                    "line1":label,
+                    "line2":"Retour base",
+                    "timing_status":"ok",
+                    "timing_min":0,
+                    "timing_text":""
+                })
 
     gps = None
     if isinstance(current_position, dict):
@@ -1766,6 +1798,19 @@ html,body,#map{{margin:0;width:100%;height:100%;background:#070b14;font-family:-
 .base-marker{{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0b1220;border:3px solid #62f6b7;color:#fff;font-size:20px;box-shadow:0 4px 18px rgba(98,246,183,.35)}}
 .route-pill{{background:rgba(92,99,109,.97);color:#fff;border:1px solid #a7adb6;border-radius:12px;padding:7px 10px;box-shadow:0 5px 18px rgba(0,0,0,.24);font-weight:850;font-size:12px;line-height:1.3;white-space:nowrap}}
 .route-pill .sub{{color:#80e8ff;font-weight:900}}
+.route-pill.route-late{{
+    background:rgba(190,38,52,.98)!important;
+    border-color:#ffadb6!important;
+    box-shadow:0 6px 20px rgba(190,38,52,.38)!important;
+}}
+.route-pill .timing-line{{
+    margin-top:4px;
+    font-size:12px;
+    font-weight:950;
+}}
+.route-pill .timing-advance{{color:#c5f7d5}}
+.route-pill.route-late .timing-line{{color:#ffffff}}
+
 .radar-marker{{width:34px;height:34px;border-radius:50%;background:#ff293d;border:3px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:950;box-shadow:0 4px 15px rgba(255,41,61,.45)}}
 .fuel-marker{{min-width:40px;height:38px;border-radius:13px;background:#0a8f63;border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:950;box-shadow:0 4px 15px rgba(10,143,99,.42);padding:0 5px}}
 .fuel-price{{font-size:10px;margin-left:3px;font-weight:950}}
@@ -1796,8 +1841,20 @@ map.on("load",()=>{{
 
   // Labels trajet
   DATA.labels.forEach(l=>{{
-    const el=document.createElement("div"); el.className="route-pill";
-    el.innerHTML=esc(l.line1)+`<br><span class="sub">${{esc(l.line2)}}</span>`;
+    const el=document.createElement("div");
+    const isLate = l.timing_status === "retard";
+    el.className = "route-pill" + (isLate ? " route-late" : "");
+
+    const timing = l.timing_text
+      ? `<div class="timing-line ${{isLate ? "" : "timing-advance"}}">${{esc(l.timing_text)}}</div>`
+      : "";
+
+    el.innerHTML =
+      esc(l.line1) +
+      `<br><span class="sub">${{esc(l.line2)}}</span>` +
+      timing;
+
+    // IMPORTANT : positionnement V28.4 laissé strictement intact.
     new maplibregl.Marker({{element:el,anchor:"center"}}).setLngLat(l.coords).addTo(map);
   }});
 
@@ -1816,8 +1873,7 @@ map.on("load",()=>{{
       <div class="popup-route">🚗 ${{esc(p.duration)}} · ${{esc(p.distance)}} km · IK ${{esc(p.ik)}}${{toll}}<br>⏰ Départ ${{esc(p.depart)}}</div>
       <a class="pbtn primary" target="_blank" href="${{esc(p.waze)}}">🚗 Waze</a>
       <a class="pbtn" target="_blank" href="${{esc(p.groute)}}">🗺️ Trajet Google</a>
-      <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>
-      ${{p.terrain ? `<a class="pbtn" href="${{esc(p.terrain)}}" onclick="try{{window.top.location.href=p.terrain;}}catch(e){{}} return false;">🧠 Mode terrain</a>` : ""}}${{phone}}`;
+      <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>${{phone}}`;
       marker.setPopup(new maplibregl.Popup({{offset:28,maxWidth:"340px"}}).setHTML(html));
     }} else {{
       marker.setPopup(new maplibregl.Popup({{offset:22}}).setHTML(`<b>⌂ Base</b><br>${{esc(p.subtitle)}}`));
@@ -2713,7 +2769,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.4 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.4.1 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -3415,4 +3471,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.4 — 28/07/2026 · Mode terrain iPhone/Surface corrigé · scroll automatique · Google TOLLS · GPS · radars · stations-service")
+st.caption("Routage PRO · GDH — V28.4.1 — 29/07/2026 · base stable V28.4 · avance/retard intégré aux étiquettes trajet")
