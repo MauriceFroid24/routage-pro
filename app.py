@@ -23,7 +23,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V27.0 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V27.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -108,7 +108,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO — V27.0 — 28/07/2026")
+st.title("🚗 Routage PRO — V27.1 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -252,7 +252,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V27.0 — lisibilité des champs IA désactivés sur iPhone */
+/* V27.1 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -720,88 +720,78 @@ def osrm_route(origin_lat, origin_lon, dest_lat, dest_lon):
     return None
 
 
-@st.cache_data(show_spinner=False, ttl=300)
-def google_routes_traffic(origin, destination, departure_dt, api_key):
-    """Google Routes API : ETA avec trafic réel/prédictif.
-
-    - TRAFFIC_AWARE_OPTIMAL : qualité d'itinéraire équivalente à Google Maps.
-    - BEST_GUESS : combine trafic actuel + historique.
-    - departureTime : heure réelle/prévue de départ du trajet.
-    """
-    if not api_key or not isinstance(departure_dt, datetime):
-        return None
-
+def decode_google_polyline(encoded):
+    if not encoded:
+        return []
+    coords=[]; index=0; lat=0; lng=0
     try:
-        paris = ZoneInfo("Europe/Paris")
-        now_paris = datetime.now(paris)
+        while index < len(encoded):
+            for is_lat in (True, False):
+                result=0; shift=0
+                while True:
+                    b=ord(encoded[index])-63; index+=1
+                    result |= (b & 0x1f) << shift; shift += 5
+                    if b < 0x20: break
+                delta = ~(result >> 1) if (result & 1) else (result >> 1)
+                if is_lat: lat += delta
+                else: lng += delta
+            coords.append([lat/1e5,lng/1e5])
+    except Exception:
+        return []
+    return coords
 
-        # Les dates venant d'Excel sont naïves : on les interprète comme heure française.
-        dep = departure_dt
-        if dep.tzinfo is None:
-            dep = dep.replace(tzinfo=paris)
-        else:
-            dep = dep.astimezone(paris)
+def money_to_float(money):
+    if not isinstance(money, dict): return 0.0
+    try:
+        return float(money.get('units',0) or 0)+float(money.get('nanos',0) or 0)/1_000_000_000
+    except Exception:
+        return 0.0
 
-        # Google Routes n'accepte pas une departureTime passée.
-        # Pour une tournée passée, on ne prétend donc pas avoir du "trafic réel".
-        if dep < now_paris - timedelta(minutes=1):
-            return None
+ROUTE_PREF_LABELS={
+    'recommended':'⚡ Recommandé',
+    'no_tolls':'💶 Sans péage',
+    'shortest':'📏 Plus court',
+    'no_highways':'🛣️ Sans autoroute',
+}
 
-        payload = {
-            "origin": {"address": str(origin)},
-            "destination": {"address": str(destination)},
-            "travelMode": "DRIVE",
-            "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
-            "trafficModel": "BEST_GUESS",
-            "departureTime": dep.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "languageCode": "fr-FR",
-            "regionCode": "FR",
-            "units": "METRIC",
+@st.cache_data(show_spinner=False, ttl=300)
+def google_routes_traffic(origin, destination, departure_dt, api_key, route_pref="recommended", include_tolls=True):
+    if not api_key or not isinstance(departure_dt, datetime): return None
+    try:
+        paris=ZoneInfo("Europe/Paris"); now_paris=datetime.now(paris)
+        dep=departure_dt.replace(tzinfo=paris) if departure_dt.tzinfo is None else departure_dt.astimezone(paris)
+        if dep < now_paris - timedelta(minutes=1): return None
+        payload={
+            "origin":{"address":str(origin)},"destination":{"address":str(destination)},
+            "travelMode":"DRIVE","routingPreference":"TRAFFIC_AWARE_OPTIMAL","trafficModel":"BEST_GUESS",
+            "departureTime":dep.astimezone(timezone.utc).isoformat().replace("+00:00","Z"),
+            "languageCode":"fr-FR","regionCode":"FR","units":"METRIC",
+            "routeModifiers":{"avoidTolls":route_pref=="no_tolls","avoidHighways":route_pref=="no_highways","vehicleInfo":{"emissionType":"DIESEL"}},
         }
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": api_key,
-            "X-Goog-FieldMask": "routes.duration,routes.staticDuration,routes.distanceMeters",
-        }
-
-        r = requests.post(
-            "https://routes.googleapis.com/directions/v2:computeRoutes",
-            headers=headers,
-            json=payload,
-            timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
-        routes = data.get("routes", [])
-        if not routes:
-            return None
-
-        route = routes[0]
-
+        if include_tolls: payload["extraComputations"]=["TOLLS"]
+        if route_pref=="shortest":
+            payload["requestedReferenceRoutes"]=["SHORTER_DISTANCE"]; payload["routingPreference"]="TRAFFIC_AWARE"
+        fields=["routes.duration","routes.staticDuration","routes.distanceMeters","routes.routeLabels","routes.polyline.encodedPolyline"]
+        if include_tolls: fields.append("routes.travelAdvisory.tollInfo")
+        headers={"Content-Type":"application/json","X-Goog-Api-Key":api_key,"X-Goog-FieldMask":",".join(fields)}
+        r=requests.post("https://routes.googleapis.com/directions/v2:computeRoutes",headers=headers,json=payload,timeout=15); r.raise_for_status()
+        routes=r.json().get("routes",[])
+        if not routes: return None
+        route=routes[0]
+        if route_pref=="shortest":
+            for cand in routes:
+                if "SHORTER_DISTANCE" in cand.get("routeLabels",[]): route=cand; break
         def sec(v):
-            try:
-                return float(str(v).rstrip("s"))
-            except Exception:
-                return 0.0
-
-        traffic_min = sec(route.get("duration", "0s")) / 60
-        static_min = sec(route.get("staticDuration", "0s")) / 60
-        km = float(route.get("distanceMeters", 0) or 0) / 1000
-
-        if traffic_min <= 0 or km <= 0:
-            return None
-
-        return {
-            "km": km,
-            "min": traffic_min,
-            "static_min": static_min,
-            "traffic_delay_min": max(0.0, traffic_min - static_min),
-            "source": "Google Routes trafic",
-        }
+            try:return float(str(v).rstrip("s"))
+            except:return 0.0
+        traffic_min=sec(route.get("duration","0s"))/60; static_min=sec(route.get("staticDuration","0s"))/60; km=float(route.get("distanceMeters",0) or 0)/1000
+        toll_info=route.get("travelAdvisory",{}).get("tollInfo",{}); est=toll_info.get("estimatedPrice",[]) if isinstance(toll_info,dict) else []
+        toll_amount=money_to_float(est[0]) if est else 0.0; toll_known=bool(est)
+        if traffic_min<=0 or km<=0:return None
+        return {"km":km,"min":traffic_min,"static_min":static_min,"traffic_delay_min":max(0.0,traffic_min-static_min),"source":"Google Routes trafic",
+                "geometry":decode_google_polyline(route.get("polyline",{}).get("encodedPolyline","")),"toll_amount":round(toll_amount,2),"toll_known":toll_known,"route_pref":route_pref}
     except Exception:
         return None
-
 
 
 def google_routes_diagnostic(api_key, origin="72 avenue des Tourelles, 94490 Ormesson-sur-Marne", destination="10 Rue de la Planche, 89210 Esnon"):
@@ -870,6 +860,20 @@ def traffic_factor(arrival_dt):
         return 1.25
     return 1.12
 
+
+def extra_step_to_row(step):
+    d=step.get("date"); h=step.get("heure"); phone_fmt,phone_digits=format_phone(step.get("telephone","")); label=step.get("nom","").strip() or step.get("type","Étape")
+    return {"ordre":0,"numero_rdv":"","numero_rdv_source":"","nom_prospect":label,"adresse":step.get("adresse",""),"code_postal":"","ville":"","adresse_complete":step.get("adresse",""),
+            "date_rdv":d,"heure_rdv":h,"rdv_datetime":dt_from_row(d,h),"telephone":phone_fmt,"telephone_tel":phone_digits,"email":"","fournisseur":"","commercial":"","teleprospecteur":"",
+            "remarque_crm":step.get("note",""),"details_crm":step.get("note",""),"analyse_ia_importee":"","type_etape":step.get("type","Autre"),"duree_etape_min":int(step.get("duree",30) or 30),"is_extra_step":True}
+
+def apply_extra_steps(df):
+    base=df.copy(); base["is_extra_step"]=False; base["type_etape"]="RDV client"; base["duree_etape_min"]=0
+    steps=st.session_state.get("extra_steps",[])
+    if not steps:return base
+    extras=pd.DataFrame([extra_step_to_row(s) for s in steps]); merged=pd.concat([base,extras],ignore_index=True,sort=False)
+    merged["__sort_dt"]=pd.to_datetime(merged["rdv_datetime"],errors="coerce"); merged=merged.sort_values("__sort_dt",na_position="last").drop(columns=["__sort_dt"]).reset_index(drop=True)
+    merged["numero_rdv"]=range(1,len(merged)+1); merged["ordre"]=range(1,len(merged)+1); return merged
 
 def prepare_dataframe(file):
     df = pd.read_excel(file, header=0)
@@ -952,7 +956,7 @@ def renumber_route_df(df):
     return out
 
 
-def route_between(prev_addr, prev_geo, addr, coord, departure_dt, api_key, use_google):
+def route_between(prev_addr, prev_geo, addr, coord, departure_dt, api_key, use_google, route_pref="recommended", include_tolls=True):
     """Calcule un trajet.
 
     Le temps Google est prioritaire quand Routes API est disponible.
@@ -964,9 +968,10 @@ def route_between(prev_addr, prev_geo, addr, coord, departure_dt, api_key, use_g
     )
 
     if use_google and api_key and isinstance(departure_dt, datetime):
-        g = google_routes_traffic(prev_addr, addr, departure_dt, api_key)
+        g = google_routes_traffic(prev_addr, addr, departure_dt, api_key, route_pref=route_pref, include_tolls=include_tolls)
         if g:
-            g["geometry"] = osrm.get("geometry", []) if osrm else []
+            if not g.get("geometry") and osrm:
+                g["geometry"] = osrm.get("geometry", [])
             return g
 
     if osrm:
@@ -983,7 +988,7 @@ def route_between(prev_addr, prev_geo, addr, coord, departure_dt, api_key, use_g
     return {"km": None, "min": None, "source": "Non calculé", "geometry": []}
 
 
-def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
+def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key, route_pref="recommended", include_tolls=True):
     addresses = [start_address] + df["adresse_complete"].tolist()
     geo = geocode_addresses(addresses)
 
@@ -1015,7 +1020,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
 
         rb = route_between(
             prev_addr, prev_geo, addr, coord,
-            initial_departure, api_key, use_google
+            initial_departure, api_key, use_google, route_pref, include_tolls
         )
 
         # Pour Google, une seconde passe utilise l'heure de départ conseillée
@@ -1030,7 +1035,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
 
             rb2 = route_between(
                 prev_addr, prev_geo, addr, coord,
-                suggested, api_key, use_google
+                suggested, api_key, use_google, route_pref, include_tolls
             )
             if rb2.get("source") == "Google Routes trafic":
                 rb = rb2
@@ -1069,11 +1074,8 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
         else:
             pause_min = None
 
-        previous_rdv_end = (
-            arrival_dt + timedelta(minutes=visit_min)
-            if isinstance(arrival_dt, datetime)
-            else None
-        )
+        step_duration = int(row.get("duree_etape_min",0) or 0) if bool(row.get("is_extra_step",False)) else int(visit_min)
+        previous_rdv_end = arrival_dt + timedelta(minutes=step_duration) if isinstance(arrival_dt,datetime) else None
 
         cumulative_km += km or 0
         cumulative_min += drive_min or 0
@@ -1097,6 +1099,9 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
             "street_view": streetview_link(coord.get("lat"), coord.get("lon"), addr),
             "itineraire_depuis_precedent": directions_link(prev_addr, addr),
             "route_geometry": rb.get("geometry", []),
+            "peage_estime": float(rb.get("toll_amount", 0) or 0),
+            "peage_connu": bool(rb.get("toll_known", False)),
+            "route_pref": rb.get("route_pref", route_pref),
         })
         out.append(r)
         prev_addr = addr
@@ -1110,16 +1115,13 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
         last = route_df.iloc[-1]
         last_addr = last["adresse_complete"]
         last_geo = {"lat": last.get("lat"), "lon": last.get("lon")}
-        last_end = (
-            last.get("rdv_datetime") + timedelta(minutes=visit_min)
-            if isinstance(last.get("rdv_datetime"), datetime)
-            else None
-        )
+        last_duration=int(last.get("duree_etape_min",0) or 0) if bool(last.get("is_extra_step",False)) else int(visit_min)
+        last_end=last.get("rdv_datetime")+timedelta(minutes=last_duration) if isinstance(last.get("rdv_datetime"),datetime) else None
 
         rb = route_between(
             last_addr, last_geo, start_address,
             geo.get(start_address, {}),
-            last_end, api_key, use_google
+            last_end, api_key, use_google, route_pref, include_tolls
         )
 
         km = rb.get("km")
@@ -1168,6 +1170,9 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key):
             "street_view": maps_link(start_address),
             "itineraire_depuis_precedent": directions_link(last_addr, start_address),
             "route_geometry": rb.get("geometry", []),
+            "peage_estime": float(rb.get("toll_amount", 0) or 0),
+            "peage_connu": bool(rb.get("toll_known", False)),
+            "route_pref": rb.get("route_pref", route_pref),
         }
 
     return route_df, return_row, geo.get(start_address, {})
@@ -1229,7 +1234,7 @@ def make_map(df, return_row, start_address, start_geo, interactive=True):
                       popup=folium.Popup(popup_html, max_width=340),
                       icon=folium.Icon(color="blue", icon="user")).add_to(m)
 
-        marker_html = f"""<div style='font-size:16px;line-height:19px;font-weight:900;background:#ff8c00;color:#000;border:2px solid #fff;border-radius:9px;padding:5px 8px;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.45);'>#{r.get('numero_rdv','')} · {time_label}</div>"""
+        marker_html = f"""<div style='font-size:16px;line-height:19px;font-weight:900;background:#ffb347;color:#111827;border:2px solid #111827;border-radius:9px;padding:5px 8px;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.45);'>#{r.get('numero_rdv','')} · {time_label}<br>{client}</div>"""
         folium.map.Marker([r["lat"], r["lon"]], icon=folium.DivIcon(html=marker_html)).add_to(m)
         points.append([r["lat"], r["lon"]])
 
@@ -1237,7 +1242,8 @@ def make_map(df, return_row, start_address, start_geo, interactive=True):
         if isinstance(geom, list) and len(geom) >= 2:
             folium.PolyLine(geom, weight=5, opacity=0.9, color="red").add_to(m)
             mid = geom[len(geom)//2]
-            route_label = f"""<div style='font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;line-height:15px;font-weight:850;background:rgba(17,24,39,.94);color:#fff;border:1px solid #64748b;border-radius:9px;padding:5px 7px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.40);'>🚗 {fmt_duration(r.get('temps_route_depuis_precedent_min',''))} · {r.get('distance_depuis_precedent_km','')} km<br>⏰ {fmt_dt(r.get('depart_conseille'))}</div>"""
+            toll_txt = f" · 🛣️ {euro(r.get('peage_estime',0))}" if float(r.get('peage_estime',0) or 0)>0 else ""
+            route_label = f"""<div style='font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;line-height:15px;font-weight:900;background:#fff;color:#111827;border:2px solid #111827;border-radius:9px;padding:6px 8px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);'>🚗 {fmt_duration(r.get('temps_route_depuis_precedent_min',''))} · {r.get('distance_depuis_precedent_km','')} km{toll_txt}<br>⏰ Départ {fmt_dt(r.get('depart_conseille'))}</div>"""
             folium.map.Marker(mid, icon=folium.DivIcon(html=route_label)).add_to(m)
 
     if return_row and return_row.get("lat") and return_row.get("lon"):
@@ -1946,6 +1952,30 @@ with st.sidebar:
                 st.caption("La clé API n'est jamais affichée par ce diagnostic.")
     else:
         st.warning("🟠 Google Routes API non configurée : temps sans trafic réel")
+    st.divider()
+    st.subheader("🧭 Itinéraire")
+    route_pref_label=st.selectbox("Préférence",["⚡ Recommandé","💶 Sans péage","📏 Plus court","🛣️ Sans autoroute"], index=0)
+    route_pref={"⚡ Recommandé":"recommended","💶 Sans péage":"no_tolls","📏 Plus court":"shortest","🛣️ Sans autoroute":"no_highways"}[route_pref_label]
+    include_tolls=st.checkbox("Afficher le coût estimé des péages",value=True)
+    with st.expander("➕ Ajouter une étape",expanded=False):
+        st.caption("Exemple : ouverture de chantier avant le premier RDV.")
+        extra_type=st.selectbox("Type",["🏗️ Ouverture de chantier","🏢 Bureau / dépôt","☕ Pause","📍 Autre"],key="extra_type")
+        extra_nom=st.text_input("Nom / client",key="extra_nom")
+        extra_adresse=st.text_input("Adresse complète",key="extra_adresse")
+        cdate,ctime=st.columns(2)
+        with cdate: extra_date=st.date_input("Date",value=date.today()+timedelta(days=1),key="extra_date")
+        with ctime: extra_heure=st.time_input("Heure",value=dtime(8,30),key="extra_heure")
+        extra_duree=st.number_input("Durée sur place (min)",min_value=0,max_value=240,value=30,step=5,key="extra_duree")
+        extra_tel=st.text_input("Téléphone (optionnel)",key="extra_tel")
+        extra_note=st.text_area("Note (optionnel)",key="extra_note",height=60)
+        if st.button("➕ Ajouter à la tournée",use_container_width=True):
+            if not str(extra_adresse).strip(): st.error("Renseigne l'adresse de l'étape.")
+            else:
+                st.session_state.setdefault("extra_steps",[]); st.session_state["extra_steps"].append({"type":extra_type,"nom":extra_nom or extra_type,"adresse":extra_adresse.strip(),"date":extra_date,"heure":extra_heure,"duree":int(extra_duree),"telephone":extra_tel,"note":extra_note}); st.rerun()
+        for j,s in enumerate(st.session_state.get("extra_steps",[])):
+            cc1,cc2=st.columns([4,1]); cc1.caption(f"{fmt_time(s.get('heure'))} · {s.get('nom')} · {s.get('adresse')}")
+            if cc2.button("✕",key=f"del_extra_{j}"): st.session_state["extra_steps"].pop(j); st.rerun()
+
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
     saved = st.file_uploader("Ou charger un récap CSV sauvegardé", type=["csv"], key="saved_csv")
     auto_reload = st.checkbox("Recharger automatiquement le dernier Excel de la journée", value=True)
@@ -1963,7 +1993,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V27.0 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V27.1 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -1989,12 +2019,13 @@ else:
 if source_file:
     try:
         df = prepare_dataframe(source_file)
+        df = apply_extra_steps(df)
         if df.empty:
             st.error("Aucune adresse trouvée dans le fichier.")
             st.stop()
         st.success(f"{len(df)} RDV chargés depuis {source_label}. Calcul automatique lancé, aucun bouton à cliquer.")
         with st.spinner("Géocodage, trajets, pauses, départs conseillés..."):
-            route_df, return_row, start_geo = enrich_route(df, start_address, int(safety_min), int(visit_min), use_google, google_key)
+            route_df, return_row, start_geo = enrich_route(df, start_address, int(safety_min), int(visit_min), use_google, google_key, route_pref, include_tolls)
         st.session_state["route_df"] = route_df
         st.session_state["return_row"] = return_row
         st.session_state["start_address"] = start_address
@@ -2046,6 +2077,7 @@ distance_series = pd.to_numeric(route_df.get("distance_depuis_precedent_km"), er
 time_series = pd.to_numeric(route_df.get("temps_route_depuis_precedent_min"), errors="coerce").fillna(0)
 total_km = float(distance_series.sum()) + (to_float(return_row.get("distance_depuis_precedent_km", 0)) if return_row else 0.0)
 total_min = int(time_series.sum()) + (to_minutes(return_row.get("temps_route_depuis_precedent_min", 0)) if return_row else 0)
+total_tolls=float(pd.to_numeric(route_df.get("peage_estime",pd.Series(dtype=float)),errors="coerce").fillna(0).sum())+(to_float(return_row.get("peage_estime",0)) if return_row else 0.0)
 
 
 # ===== V27 : dashboard terrain premium =====
@@ -2064,7 +2096,9 @@ if return_row and isinstance(return_row.get("rdv_datetime"), datetime):
     retour_estime = return_row.get("rdv_datetime") + timedelta(minutes=ret_m)
 
 summary_title = french_long_date(tour_date) if tour_date else "Ma tournée"
-summary_bits = [f"{len(route_df)} RDV", f"{total_km:.0f} km", f"{fmt_duration(total_min)} de route", f"{euro(current_ik_total)} IK"]
+summary_bits=[f"{len(route_df)} étapes",f"{total_km:.0f} km",f"{fmt_duration(total_min)} de route"]
+if total_tolls>0: summary_bits.append(f"{euro(total_tolls)} péages")
+summary_bits.append(f"{euro(current_ik_total)} IK")
 if fmt_dt(first_dep): summary_bits.append(f"départ {fmt_dt(first_dep)}")
 if fmt_dt(retour_estime): summary_bits.append(f"retour ~{fmt_dt(retour_estime)}")
 
@@ -2083,7 +2117,7 @@ except Exception as e:
 next_rdv = find_next_rdv(route_df)
 if next_rdv is not None:
     st.subheader("🎯 Prochain rendez-vous")
-    st.markdown(f"""<div class="next-card"><div class="eyebrow">PROCHAIN RDV</div><div class="time">{fmt_time(next_rdv.get('heure_rdv'))}</div><div class="client">{next_rdv.get('nom_prospect','')}</div><div class="address">{next_rdv.get('adresse_complete','')}</div><div class="route">🚗 {fmt_duration(next_rdv.get('temps_route_depuis_precedent_min',''))} · {next_rdv.get('distance_depuis_precedent_km','')} km</div><div class="depart">⏰ Départ conseillé : {fmt_dt(next_rdv.get('depart_conseille'))}</div></div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="next-card"><div class="eyebrow">PROCHAIN RDV</div><div class="time">{fmt_time(next_rdv.get('heure_rdv'))}</div><div class="client">{next_rdv.get('nom_prospect','')}</div><div class="address">{next_rdv.get('adresse_complete','')}</div><div class="route">🚗 {fmt_duration(next_rdv.get('temps_route_depuis_precedent_min',''))} · {next_rdv.get('distance_depuis_precedent_km','')} km{(' · 🛣️ ' + euro(next_rdv.get('peage_estime',0))) if float(next_rdv.get('peage_estime',0) or 0)>0 else ''}</div><div class="depart">⏰ Départ conseillé : {fmt_dt(next_rdv.get('depart_conseille'))}</div></div>""", unsafe_allow_html=True)
     a1, a2 = st.columns(2)
     a1.link_button("🚗 WAZE", next_rdv.get("waze","#"), use_container_width=True)
     a2.link_button("🏠 VOIR MAISON", next_rdv.get("street_view","#"), use_container_width=True)
@@ -2091,12 +2125,24 @@ if next_rdv is not None:
     if next_rdv.get("telephone_tel"):
         a3.link_button("📞 APPELER", f"tel:{next_rdv.get('telephone_tel')}", use_container_width=True)
     a4.link_button("💬 WHATSAPP", whatsapp_report_link(client=next_rdv.get('nom_prospect',''), departement=extract_departement(next_rdv.get('adresse_complete','')), adresse=next_rdv.get('adresse_complete',''), telephone=next_rdv.get('telephone','')), use_container_width=True)
+    with st.expander("🧭 Comparer les itinéraires", expanded=False):
+        if google_key and isinstance(next_rdv.get("rdv_datetime"), datetime):
+            idxs=route_df.index[route_df["numero_rdv"].astype(str)==str(next_rdv.get("numero_rdv"))].tolist(); ni=idxs[0] if idxs else 0
+            cmp_origin=start_address if ni<=0 else route_df.iloc[ni-1].get("adresse_complete",start_address)
+            dep_guess=next_rdv.get("depart_conseille") or (next_rdv.get("rdv_datetime")-timedelta(hours=2))
+            rows=[]
+            for pk,pl in ROUTE_PREF_LABELS.items():
+                rr_cmp=google_routes_traffic(cmp_origin,next_rdv.get("adresse_complete",""),dep_guess,google_key,route_pref=pk,include_tolls=True)
+                if rr_cmp: rows.append({"Itinéraire":pl,"Temps":fmt_duration(rr_cmp.get("min")),"Distance":f"{float(rr_cmp.get('km',0)):.0f} km","Péage":euro(rr_cmp.get("toll_amount",0)) if float(rr_cmp.get("toll_amount",0) or 0)>0 else "0 €"})
+            if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+            else: st.info("Comparaison indisponible pour ce trajet.")
+        else: st.info("Comparaison disponible pour les trajets futurs.")
 
 st.subheader("📍 Rendez-vous de la journée")
 for _, rr in route_df.iterrows():
     is_next = next_rdv is not None and str(rr.get("numero_rdv")) == str(next_rdv.get("numero_rdv"))
     badge = " · PROCHAIN" if is_next else ""
-    st.markdown(f"""<div class="route-card"><strong>#{rr.get('numero_rdv','')} · {fmt_time(rr.get('heure_rdv'))} · {rr.get('nom_prospect','')}{badge}</strong><br><span class="muted">{rr.get('adresse_complete','')}</span><br><span class="muted">🚗 {fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km</span> &nbsp; <span class="go">⏰ {fmt_dt(rr.get('depart_conseille'))}</span></div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="route-card"><strong>#{rr.get('numero_rdv','')} · {fmt_time(rr.get('heure_rdv'))} · {rr.get('nom_prospect','')}{badge}</strong><br><span class="muted">{rr.get('adresse_complete','')}</span><br><span class="muted">🚗 {fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km{(' · 🛣️ ' + euro(rr.get('peage_estime',0))) if float(rr.get('peage_estime',0) or 0)>0 else ''}</span> &nbsp; <span class="go">⏰ {fmt_dt(rr.get('depart_conseille'))}</span></div>""", unsafe_allow_html=True)
 
 st.divider()
 
@@ -2290,9 +2336,7 @@ for _, r in route_df.iterrows():
         with c1:
             st.markdown(f"**Adresse :** {r.get('adresse_complete','')}")
             st.markdown(f"**Téléphone :** {r.get('telephone','')}")
-            st.markdown(f"**Départ conseillé :** {fmt_dt(r.get('depart_conseille'))} avec {r.get('marge_securite_min', safety_min)} min de sécurité")
-            st.markdown(f"**Trajet depuis précédent :** {r.get('distance_depuis_precedent_km','')} km · {fmt_duration(r.get('temps_route_depuis_precedent_min',''))} · {r.get('note_trafic','')}")
-            st.markdown(f"**Indemnité estimée pour ce trajet :** {euro(r.get('ik_montant_trajet', 0))}")
+            st.caption("Trajet, départ conseillé et péage sont déjà visibles sur la carte.")
         with c2:
             st.link_button("🚗 Waze", r.get('waze', '#'), use_container_width=True)
             st.link_button("🗺️ Google Maps", r.get('google_maps', '#'), use_container_width=True)
@@ -2502,4 +2546,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("Routage PRO V27.0 — 28/07/2026 · interface terrain premium · Google Routes · Waze · CRM · IK")
+st.caption("Routage PRO V27.1 — 28/07/2026 · carte terrain · péages · itinéraires · étapes · Google Routes")
