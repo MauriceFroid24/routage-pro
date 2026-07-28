@@ -23,7 +23,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V26.5 DIAGNOSTIC — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V27.0 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -108,8 +108,8 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO V26.5 DIAGNOSTIC — 28/07/2026 — terrain + IK + CRM + rappels + IA")
-st.caption("Mode sombre · carte claire · IK · CRM persistant · rappels intelligents · WhatsApp · import CRM enrichi")
+st.title("🚗 Routage PRO — V27.0 — 28/07/2026")
+st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
 <style>
@@ -252,7 +252,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V26.5 — lisibilité des champs IA désactivés sur iPhone */
+/* V27.0 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -260,6 +260,30 @@ textarea:disabled {
     opacity: 1 !important;
     border: 1px solid #cbd5e1 !important;
 }
+
+
+/* V27 — Interface terrain premium iPhone */
+@media (max-width: 768px) {
+    .block-container { padding-top: 3.9rem !important; padding-left: .65rem !important; padding-right: .65rem !important; }
+    h1 { font-size: 1.45rem !important; line-height: 1.2 !important; }
+    h2 { font-size: 1.2rem !important; }
+    h3 { font-size: 1.05rem !important; }
+}
+.day-summary { background:linear-gradient(135deg,#111827,#1f2937); border:1px solid #374151; border-radius:18px; padding:14px 16px; margin:8px 0 12px 0; box-shadow:0 8px 26px rgba(0,0,0,.24); }
+.day-summary-title { font-size:1.05rem; font-weight:900; color:#fff; margin-bottom:6px; }
+.day-summary-line { font-size:.98rem; font-weight:700; color:#e5e7eb; line-height:1.55; }
+.next-card { background:linear-gradient(135deg,#0f172a,#172554); border:2px solid #2563eb; border-radius:20px; padding:16px; margin:12px 0; box-shadow:0 10px 30px rgba(37,99,235,.20); }
+.next-card .eyebrow { color:#93c5fd; font-weight:900; letter-spacing:.06em; font-size:.76rem; }
+.next-card .time { color:#fff; font-size:2.05rem; font-weight:950; line-height:1; margin-top:5px; }
+.next-card .client { color:#fff; font-size:1.28rem; font-weight:900; margin-top:6px; }
+.next-card .address { color:#dbeafe; font-size:.94rem; margin-top:3px; }
+.next-card .route { color:#fff; font-size:1.02rem; font-weight:800; margin-top:12px; }
+.next-card .depart { display:inline-block; margin-top:10px; padding:7px 10px; border-radius:10px; background:#052e16; border:1px solid #22c55e; color:#dcfce7; font-weight:900; }
+.route-card { background:#111827; border:1px solid #374151; border-radius:16px; padding:12px 14px; margin:8px 0; }
+.route-card strong { color:#fff; }
+.route-card .muted { color:#cbd5e1; }
+.route-card .go { color:#86efac; font-weight:850; }
+.map-legend { font-size:.82rem; color:#cbd5e1; margin:-2px 0 8px 0; }
 
 </style>
 """, unsafe_allow_html=True)
@@ -583,6 +607,25 @@ def streetview_link(lat, lon, address):
 def directions_link(origin, destination):
     return f"https://www.google.com/maps/dir/?api=1&origin={quote_plus(origin)}&destination={quote_plus(destination)}&travelmode=driving"
 
+
+
+FR_WEEKDAYS = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
+FR_MONTHS = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"]
+
+def french_long_date(d):
+    if not isinstance(d, date):
+        return ""
+    return f"{FR_WEEKDAYS[d.weekday()]} {d.day} {FR_MONTHS[d.month-1]}"
+
+def find_next_rdv(df):
+    if df is None or df.empty:
+        return None
+    now_paris = datetime.now(ZoneInfo("Europe/Paris")).replace(tzinfo=None)
+    for _, rr in df.iterrows():
+        dt = rr.get("rdv_datetime")
+        if isinstance(dt, datetime) and dt >= now_paris:
+            return rr
+    return df.iloc[-1]
 
 def fmt_date(x):
     if isinstance(x, date):
@@ -1134,6 +1177,7 @@ def make_map(df, return_row, start_address, start_geo, interactive=True):
     map_df = df.copy()
     if return_row:
         map_df = pd.concat([map_df, pd.DataFrame([return_row])], ignore_index=True)
+
     valid = map_df.dropna(subset=["lat", "lon"])
     if not valid.empty:
         center = [valid["lat"].mean(), valid["lon"].mean()]
@@ -1141,60 +1185,78 @@ def make_map(df, return_row, start_address, start_geo, interactive=True):
         center = [start_geo["lat"], start_geo["lon"]]
     else:
         center = [48.79, 2.53]
-    m = folium.Map(
-        location=center,
-        zoom_start=11,
-        tiles="OpenStreetMap",
-        dragging=interactive,
-        scrollWheelZoom=interactive,
-        touchZoom=interactive,
-        doubleClickZoom=interactive,
-        zoom_control=True,
-    )
+
+    m = folium.Map(location=center, zoom_start=11, tiles="OpenStreetMap",
+                   dragging=interactive, scrollWheelZoom=interactive,
+                   touchZoom=interactive, doubleClickZoom=interactive, zoom_control=True)
+
     points = []
     if start_geo.get("lat") and start_geo.get("lon"):
-        folium.Marker([start_geo["lat"], start_geo["lon"]], tooltip="Départ / retour", popup=start_address, icon=folium.Icon(color="green", icon="home")).add_to(m)
+        folium.Marker([start_geo["lat"], start_geo["lon"]],
+                      tooltip="Départ / retour",
+                      popup=folium.Popup(f"<b>🏠 Base</b><br>{start_address}", max_width=320),
+                      icon=folium.Icon(color="green", icon="home")).add_to(m)
         points.append([start_geo["lat"], start_geo["lon"]])
+
     for _, r in df.iterrows():
         if not r.get("lat") or not r.get("lon"):
             continue
+
         time_label = fmt_time(r.get("heure_rdv"))
-        label = f"{r.get('numero_rdv','')} - {r.get('nom_prospect','')} - {time_label}"
-        html = f"""
-        <div style='font-size:20px;line-height:23px;font-weight:900;background:#ff8c00;color:#000;border:3px solid #fff;border-radius:10px;padding:7px 10px;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.55);'>
-        #{r.get('numero_rdv','')} · {r.get('nom_prospect','')}<br>🕒 {time_label}
-        </div>"""
-        folium.Marker([r["lat"], r["lon"]], tooltip=label, popup=folium.Popup(label, max_width=380), icon=folium.Icon(color="blue", icon="user")).add_to(m)
-        folium.map.Marker([r["lat"], r["lon"]], icon=folium.DivIcon(html=html)).add_to(m)
+        client = str(r.get("nom_prospect",""))
+        address = str(r.get("adresse_complete",""))
+        tel = str(r.get("telephone_tel",""))
+        waze = str(r.get("waze","#"))
+        house = str(r.get("street_view","#"))
+        phone_html = f"<a href='tel:{tel}' style='display:inline-block;padding:7px 9px;margin:4px 2px;background:#111827;color:#fff;border-radius:8px;text-decoration:none;'>📞 Appeler</a>" if tel else ""
+        popup_html = f"""
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-width:230px;">
+          <div style="font-size:18px;font-weight:900;">#{r.get('numero_rdv','')} · {time_label}</div>
+          <div style="font-size:16px;font-weight:800;margin-top:3px;">{client}</div>
+          <div style="font-size:13px;margin:6px 0 9px 0;">{address}</div>
+          <a href="{waze}" target="_blank" style="display:inline-block;padding:7px 9px;margin:4px 2px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;">🚗 Waze</a>
+          <a href="{house}" target="_blank" style="display:inline-block;padding:7px 9px;margin:4px 2px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;">🏠 Voir maison</a>
+          {phone_html}
+          <div style="font-size:12px;margin-top:7px;">
+            🚗 {r.get('distance_depuis_precedent_km','')} km · {fmt_duration(r.get('temps_route_depuis_precedent_min',''))}<br>
+            ⏰ Départ conseillé : <b>{fmt_dt(r.get('depart_conseille'))}</b>
+          </div>
+        </div>
+        """
+
+        folium.Marker([r["lat"], r["lon"]],
+                      tooltip=f"#{r.get('numero_rdv','')} {client} · {time_label}",
+                      popup=folium.Popup(popup_html, max_width=340),
+                      icon=folium.Icon(color="blue", icon="user")).add_to(m)
+
+        marker_html = f"""<div style='font-size:16px;line-height:19px;font-weight:900;background:#ff8c00;color:#000;border:2px solid #fff;border-radius:9px;padding:5px 8px;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.45);'>#{r.get('numero_rdv','')} · {time_label}</div>"""
+        folium.map.Marker([r["lat"], r["lon"]], icon=folium.DivIcon(html=marker_html)).add_to(m)
         points.append([r["lat"], r["lon"]])
-    if return_row and return_row.get("lat") and return_row.get("lon"):
-        points.append([return_row["lat"], return_row["lon"]])
-    # Tracé des routes réelles quand OSRM a fourni la géométrie, sinon ligne droite de secours
-    route_drawn = False
-    for _, r in df.iterrows():
+
         geom = r.get("route_geometry", [])
         if isinstance(geom, list) and len(geom) >= 2:
             folium.PolyLine(geom, weight=5, opacity=0.9, color="red").add_to(m)
-            route_drawn = True
-    if return_row:
+            mid = geom[len(geom)//2]
+            route_label = f"""<div style='font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;line-height:15px;font-weight:850;background:rgba(17,24,39,.94);color:#fff;border:1px solid #64748b;border-radius:9px;padding:5px 7px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.40);'>🚗 {fmt_duration(r.get('temps_route_depuis_precedent_min',''))} · {r.get('distance_depuis_precedent_km','')} km<br>⏰ {fmt_dt(r.get('depart_conseille'))}</div>"""
+            folium.map.Marker(mid, icon=folium.DivIcon(html=route_label)).add_to(m)
+
+    if return_row and return_row.get("lat") and return_row.get("lon"):
+        points.append([return_row["lat"], return_row["lon"]])
         geom = return_row.get("route_geometry", [])
         if isinstance(geom, list) and len(geom) >= 2:
-            folium.PolyLine(geom, weight=5, opacity=0.9, color="red", dash_array="8,6").add_to(m)
-            route_drawn = True
-    # Pas de ligne droite de secours : on évite l'effet "avion".
-    # Si aucune géométrie routière n'est disponible, les marqueurs restent visibles sans faux tracé.
+            folium.PolyLine(geom, weight=5, opacity=0.85, color="red", dash_array="8,6").add_to(m)
+            mid = geom[len(geom)//2]
+            route_label = f"""<div style='font-size:12px;line-height:15px;font-weight:850;background:rgba(17,24,39,.94);color:#fff;border:1px solid #64748b;border-radius:9px;padding:5px 7px;white-space:nowrap;'>🏠 Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km</div>"""
+            folium.map.Marker(mid, icon=folium.DivIcon(html=route_label)).add_to(m)
 
-    # Zoom automatique : afficher toutes les destinations dès l'ouverture de la carte
-    # (base + tous les RDV + retour base) plutôt qu'une simple portion de route.
     try:
         if len(points) >= 2:
-            m.fit_bounds(points, padding=(35, 35))
+            m.fit_bounds(points, padding=(35,35))
         elif len(points) == 1:
             m.location = points[0]
             m.zoom_start = 13
     except Exception:
         pass
-
     return m
 
 
@@ -1871,7 +1933,7 @@ with st.sidebar:
         help="La clé est lue automatiquement depuis Streamlit Secrets."
     )
     if google_routes_ready:
-        st.success("🟢 Google Routes API configurée")
+        st.caption("🟢 Trafic Google actif")
         if st.button("🧪 Tester Google Routes", use_container_width=True):
             with st.spinner("Test de Google Routes en cours…"):
                 diagnostic = google_routes_diagnostic(google_key)
@@ -1901,7 +1963,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V26.5 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V27.0 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -1985,39 +2047,94 @@ time_series = pd.to_numeric(route_df.get("temps_route_depuis_precedent_min"), er
 total_km = float(distance_series.sum()) + (to_float(return_row.get("distance_depuis_precedent_km", 0)) if return_row else 0.0)
 total_min = int(time_series.sum()) + (to_minutes(return_row.get("temps_route_depuis_precedent_min", 0)) if return_row else 0)
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("RDV", len(route_df))
-col2.metric("Distance retour inclus", f"{total_km:.1f} km")
-col3.metric("Temps route", fmt_duration(total_min))
-if not route_df.empty:
-    first_dep = route_df.iloc[0].get("depart_conseille")
-    col4.metric("Premier départ conseillé", fmt_dt(first_dep))
-    if fmt_dt(first_dep):
-        st.success(f"Départ conseillé de la base : {fmt_dt(first_dep)}")
-    else:
-        st.warning("Départ conseillé non calculé : vérifie que chaque RDV a bien une date et une heure dans les colonnes D et E.")
 
-st.subheader("🧭 Fil conducteur terrain")
-timeline_df = pd.DataFrame(build_timeline(route_df, return_row, start_address, int(visit_min)))
-st.dataframe(timeline_df, use_container_width=True, hide_index=True)
+# ===== V27 : dashboard terrain premium =====
+tour_date = None
+try:
+    dates = [d for d in route_df.get("date_rdv", []) if isinstance(d, date)]
+    if dates:
+        tour_date = dates[0]
+except Exception:
+    pass
 
-st.subheader("📊 Détail des trajets étape par étape")
-show_cols = ["numero_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "teleprospecteur", "telephone", "adresse_complete", "distance_depuis_precedent_km", "ik_montant_trajet", "temps_route_depuis_precedent_min", "note_trafic"]
-display_df = route_df[show_cols].copy()
-display_df["heure_rdv"] = display_df["heure_rdv"].apply(fmt_time)
-display_df["depart_conseille"] = display_df["depart_conseille"].apply(fmt_dt)
-display_df["pause_avant_rdv_min"] = display_df["pause_avant_rdv_min"].apply(lambda x: "" if x == "" else fmt_duration(x))
-display_df["temps_route_depuis_precedent_min"] = display_df["temps_route_depuis_precedent_min"].apply(fmt_duration)
-display_df["ik_montant_trajet"] = display_df["ik_montant_trajet"].apply(euro)
-display_df = display_df.rename(columns={
-    "numero_rdv": "N° RDV", "heure_rdv": "Heure RDV", "depart_conseille": "Départ conseillé",
-    "pause_avant_rdv_min": "Pause avant RDV", "nom_prospect": "Client", "teleprospecteur": "Téléprospecteur", "telephone": "Téléphone",
-    "adresse_complete": "Adresse", "distance_depuis_precedent_km": "Km depuis précédent",
-    "ik_montant_trajet": "IK trajet", "temps_route_depuis_precedent_min": "Temps depuis précédent", "note_trafic": "Calcul"
-})
-st.dataframe(display_df, use_container_width=True, hide_index=True)
-if return_row:
-    st.info(f"Retour base inclus : {return_row.get('distance_depuis_precedent_km','')} km · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))}")
+first_dep = route_df.iloc[0].get("depart_conseille") if not route_df.empty else None
+retour_estime = None
+if return_row and isinstance(return_row.get("rdv_datetime"), datetime):
+    ret_m = to_minutes(return_row.get("temps_route_depuis_precedent_min", 0))
+    retour_estime = return_row.get("rdv_datetime") + timedelta(minutes=ret_m)
+
+summary_title = french_long_date(tour_date) if tour_date else "Ma tournée"
+summary_bits = [f"{len(route_df)} RDV", f"{total_km:.0f} km", f"{fmt_duration(total_min)} de route", f"{euro(current_ik_total)} IK"]
+if fmt_dt(first_dep): summary_bits.append(f"départ {fmt_dt(first_dep)}")
+if fmt_dt(retour_estime): summary_bits.append(f"retour ~{fmt_dt(retour_estime)}")
+
+st.markdown(f"""<div class="day-summary"><div class="day-summary-title">{summary_title}</div><div class="day-summary-line">{" · ".join(summary_bits)}</div></div>""", unsafe_allow_html=True)
+
+st.subheader("🗺️ Ma tournée")
+st.markdown('<div class="map-legend">Durée · distance · heure de départ conseillée directement sur les trajets. Touchez un RDV pour Waze, Voir maison ou Appeler.</div>', unsafe_allow_html=True)
+map_interactive_top = st.toggle("Déverrouiller la carte", value=False, key="map_interactive_top", help="Laisse désactivé sur iPhone pour faire défiler la page normalement.")
+if not map_interactive_top:
+    st.markdown("""<style>iframe[title="streamlit_folium.st_folium"]{pointer-events:none!important;}</style>""", unsafe_allow_html=True)
+try:
+    st_folium(make_map(route_df, return_row, start_address, start_geo, interactive=map_interactive_top), height=560, use_container_width=True, key="main_map_v27")
+except Exception as e:
+    st.warning(f"Carte non disponible : {e}")
+
+next_rdv = find_next_rdv(route_df)
+if next_rdv is not None:
+    st.subheader("🎯 Prochain rendez-vous")
+    st.markdown(f"""<div class="next-card"><div class="eyebrow">PROCHAIN RDV</div><div class="time">{fmt_time(next_rdv.get('heure_rdv'))}</div><div class="client">{next_rdv.get('nom_prospect','')}</div><div class="address">{next_rdv.get('adresse_complete','')}</div><div class="route">🚗 {fmt_duration(next_rdv.get('temps_route_depuis_precedent_min',''))} · {next_rdv.get('distance_depuis_precedent_km','')} km</div><div class="depart">⏰ Départ conseillé : {fmt_dt(next_rdv.get('depart_conseille'))}</div></div>""", unsafe_allow_html=True)
+    a1, a2 = st.columns(2)
+    a1.link_button("🚗 WAZE", next_rdv.get("waze","#"), use_container_width=True)
+    a2.link_button("🏠 VOIR MAISON", next_rdv.get("street_view","#"), use_container_width=True)
+    a3, a4 = st.columns(2)
+    if next_rdv.get("telephone_tel"):
+        a3.link_button("📞 APPELER", f"tel:{next_rdv.get('telephone_tel')}", use_container_width=True)
+    a4.link_button("💬 WHATSAPP", whatsapp_report_link(client=next_rdv.get('nom_prospect',''), departement=extract_departement(next_rdv.get('adresse_complete','')), adresse=next_rdv.get('adresse_complete',''), telephone=next_rdv.get('telephone','')), use_container_width=True)
+
+st.subheader("📍 Rendez-vous de la journée")
+for _, rr in route_df.iterrows():
+    is_next = next_rdv is not None and str(rr.get("numero_rdv")) == str(next_rdv.get("numero_rdv"))
+    badge = " · PROCHAIN" if is_next else ""
+    st.markdown(f"""<div class="route-card"><strong>#{rr.get('numero_rdv','')} · {fmt_time(rr.get('heure_rdv'))} · {rr.get('nom_prospect','')}{badge}</strong><br><span class="muted">{rr.get('adresse_complete','')}</span><br><span class="muted">🚗 {fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km</span> &nbsp; <span class="go">⏰ {fmt_dt(rr.get('depart_conseille'))}</span></div>""", unsafe_allow_html=True)
+
+st.divider()
+
+with st.expander("📊 Détails de tournée (optionnel)", expanded=False):
+    st.caption("Toutes les données restent disponibles, mais sont masquées par défaut pour garder l'écran terrain simple.")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("RDV", len(route_df))
+    col2.metric("Distance retour inclus", f"{total_km:.1f} km")
+    col3.metric("Temps route", fmt_duration(total_min))
+    if not route_df.empty:
+        first_dep = route_df.iloc[0].get("depart_conseille")
+        col4.metric("Premier départ conseillé", fmt_dt(first_dep))
+        if fmt_dt(first_dep):
+            st.success(f"Départ conseillé de la base : {fmt_dt(first_dep)}")
+        else:
+            st.warning("Départ conseillé non calculé : vérifie que chaque RDV a bien une date et une heure dans les colonnes D et E.")
+
+    st.subheader("🧭 Fil conducteur terrain")
+    timeline_df = pd.DataFrame(build_timeline(route_df, return_row, start_address, int(visit_min)))
+    st.dataframe(timeline_df, use_container_width=True, hide_index=True)
+
+    st.subheader("📊 Détail des trajets étape par étape")
+    show_cols = ["numero_rdv", "heure_rdv", "depart_conseille", "pause_avant_rdv_min", "nom_prospect", "teleprospecteur", "telephone", "adresse_complete", "distance_depuis_precedent_km", "ik_montant_trajet", "temps_route_depuis_precedent_min", "note_trafic"]
+    display_df = route_df[show_cols].copy()
+    display_df["heure_rdv"] = display_df["heure_rdv"].apply(fmt_time)
+    display_df["depart_conseille"] = display_df["depart_conseille"].apply(fmt_dt)
+    display_df["pause_avant_rdv_min"] = display_df["pause_avant_rdv_min"].apply(lambda x: "" if x == "" else fmt_duration(x))
+    display_df["temps_route_depuis_precedent_min"] = display_df["temps_route_depuis_precedent_min"].apply(fmt_duration)
+    display_df["ik_montant_trajet"] = display_df["ik_montant_trajet"].apply(euro)
+    display_df = display_df.rename(columns={
+        "numero_rdv": "N° RDV", "heure_rdv": "Heure RDV", "depart_conseille": "Départ conseillé",
+        "pause_avant_rdv_min": "Pause avant RDV", "nom_prospect": "Client", "teleprospecteur": "Téléprospecteur", "telephone": "Téléphone",
+        "adresse_complete": "Adresse", "distance_depuis_precedent_km": "Km depuis précédent",
+        "ik_montant_trajet": "IK trajet", "temps_route_depuis_precedent_min": "Temps depuis précédent", "note_trafic": "Calcul"
+    })
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    if return_row:
+        st.info(f"Retour base inclus : {return_row.get('distance_depuis_precedent_km','')} km · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))}")
 
 
 # Rappels visibles en haut du mode terrain
@@ -2262,30 +2379,10 @@ for _, r in route_df.iterrows():
             save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time, details_crm, analyse_ia)
             st.success("Compte rendu enregistré.")
 
-st.subheader("🗺️ Carte générale")
-nb_routes = sum(1 for _, rr in route_df.iterrows() if isinstance(rr.get("route_geometry", []), list) and len(rr.get("route_geometry", [])) >= 2)
-if return_row and isinstance(return_row.get("route_geometry", []), list) and len(return_row.get("route_geometry", [])) >= 2:
-    nb_routes += 1
-if nb_routes == 0:
-    st.warning("Aucun tracé routier disponible pour l’instant. Vérifie la connexion ou les adresses. Les calculs peuvent quand même apparaître si les coordonnées sont trouvées.")
-else:
-    st.success(f"{nb_routes} trajet(s) routier(s) tracé(s) sur la carte.")
-map_interactive = st.toggle(
-    "Activer déplacement / zoom sur la carte",
-    value=False,
-    help="Désactivé par défaut pour que le scroll iPhone fasse défiler l’application au lieu de bouger la carte."
-)
-if not map_interactive:
-    st.caption("📱 Carte verrouillée : le scroll iPhone fait défiler l’application. Active le bouton ci-dessus si tu veux déplacer/zoomer la carte.")
-    st.markdown("""<style>iframe[title="streamlit_folium.st_folium"]{pointer-events:none!important;}</style>""", unsafe_allow_html=True)
-else:
-    st.caption("🗺️ Carte interactive activée : tu peux zoomer/déplacer la carte.")
-try:
-    st_folium(make_map(route_df, return_row, start_address, start_geo, interactive=map_interactive), height=650, use_container_width=True)
-except Exception as e:
-    st.warning(f"Carte non disponible : {e}")
+with st.expander("🗺️ Carte secondaire", expanded=False):
+    st.caption("La carte principale est affichée en haut de l’application.")
 
-st.subheader("📤 Exports terrain")
+st.subheader("📤 Documents & exports")
 include_photos = st.checkbox("Essayer d'intégrer les photos Street View dans le PDF", value=bool(google_key), help="Nécessite une clé Google Maps API. Sinon le PDF contient le lien Voir maison cliquable.")
 pdf_bytes = create_pdf(route_df, return_row, start_address, include_photos, google_key, int(visit_min))
 csv_bytes = to_recap_csv(route_df, return_row)
@@ -2405,4 +2502,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("Routage PRO V26.5 DIAGNOSTIC — 28/07/2026 · Google Routes API si configurée ; sinon OSRM sans trafic réel.")
+st.caption("Routage PRO V27.0 — 28/07/2026 · interface terrain premium · Google Routes · Waze · CRM · IK")
