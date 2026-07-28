@@ -23,7 +23,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V26.4 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V26.5 DIAGNOSTIC — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -108,7 +108,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO V26.4 — 28/07/2026 — terrain + IK + CRM + rappels + IA")
+st.title("🚗 Routage PRO V26.5 DIAGNOSTIC — 28/07/2026 — terrain + IK + CRM + rappels + IA")
 st.caption("Mode sombre · carte claire · IK · CRM persistant · rappels intelligents · WhatsApp · import CRM enrichi")
 
 st.markdown("""
@@ -252,7 +252,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V26.4 — lisibilité des champs IA désactivés sur iPhone */
+/* V26.5 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -758,6 +758,63 @@ def google_routes_traffic(origin, destination, departure_dt, api_key):
         }
     except Exception:
         return None
+
+
+
+def google_routes_diagnostic(api_key, origin="72 avenue des Tourelles, 94490 Ormesson-sur-Marne", destination="10 Rue de la Planche, 89210 Esnon"):
+    """Test direct de Google Routes API et retourne un diagnostic lisible, sans afficher la clé."""
+    if not api_key:
+        return {"ok": False, "status": None, "message": "Aucune clé trouvée dans Streamlit Secrets."}
+
+    try:
+        paris = ZoneInfo("Europe/Paris")
+        dep = datetime.now(paris) + timedelta(minutes=10)
+        payload = {
+            "origin": {"address": str(origin)},
+            "destination": {"address": str(destination)},
+            "travelMode": "DRIVE",
+            "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
+            "trafficModel": "BEST_GUESS",
+            "departureTime": dep.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "languageCode": "fr-FR",
+            "regionCode": "FR",
+            "units": "METRIC",
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": api_key,
+            "X-Goog-FieldMask": "routes.duration,routes.staticDuration,routes.distanceMeters",
+        }
+        r = requests.post(
+            "https://routes.googleapis.com/directions/v2:computeRoutes",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": (r.text or "")[:1000]}
+
+        if r.ok:
+            routes = body.get("routes", []) if isinstance(body, dict) else []
+            if routes:
+                return {"ok": True, "status": r.status_code, "message": "Google Routes répond correctement."}
+            return {"ok": False, "status": r.status_code, "message": "Google a répondu, mais aucun itinéraire n'a été renvoyé."}
+
+        msg = ""
+        if isinstance(body, dict):
+            err = body.get("error", {})
+            if isinstance(err, dict):
+                msg = str(err.get("message", "") or "")
+                status_txt = str(err.get("status", "") or "")
+                if status_txt and status_txt not in msg:
+                    msg = f"{status_txt} — {msg}".strip(" —")
+        if not msg:
+            msg = str(body)[:1000]
+        return {"ok": False, "status": r.status_code, "message": msg}
+    except Exception as e:
+        return {"ok": False, "status": None, "message": f"{type(e).__name__}: {e}"}
 
 
 def traffic_factor(arrival_dt):
@@ -1815,6 +1872,16 @@ with st.sidebar:
     )
     if google_routes_ready:
         st.success("🟢 Google Routes API configurée")
+        if st.button("🧪 Tester Google Routes", use_container_width=True):
+            with st.spinner("Test de Google Routes en cours…"):
+                diagnostic = google_routes_diagnostic(google_key)
+            if diagnostic.get("ok"):
+                st.success(f"✅ Test Google Routes : {diagnostic.get('message')}")
+            else:
+                status = diagnostic.get("status")
+                prefix = f"Erreur HTTP {status}" if status else "Erreur"
+                st.error(f"🔴 {prefix} : {diagnostic.get('message')}")
+                st.caption("La clé API n'est jamais affichée par ce diagnostic.")
     else:
         st.warning("🟠 Google Routes API non configurée : temps sans trafic réel")
     uploaded = st.file_uploader("Importer ton fichier Excel", type=["xlsx", "xls"])
@@ -1834,7 +1901,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V26.4 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V26.5 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2338,4 +2405,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("Routage PRO V26.4 — 28/07/2026 · Google Routes API si configurée ; sinon OSRM sans trafic réel.")
+st.caption("Routage PRO V26.5 DIAGNOSTIC — 28/07/2026 · Google Routes API si configurée ; sinon OSRM sans trafic réel.")
