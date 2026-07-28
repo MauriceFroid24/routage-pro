@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.1 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.2 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.1 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.2 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.1 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.2 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -674,6 +674,11 @@ def directions_link(origin, destination):
     return f"https://www.google.com/maps/dir/?api=1&origin={quote_plus(origin)}&destination={quote_plus(destination)}&travelmode=driving"
 
 
+def google_drive_to_link(destination):
+    """Ouvre Google Maps en mode itinéraire vers le prospect, depuis la position courante si disponible."""
+    return f"https://www.google.com/maps/dir/?api=1&destination={quote_plus(str(destination or ''))}&travelmode=driving"
+
+
 
 FR_WEEKDAYS = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
 FR_MONTHS = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"]
@@ -838,7 +843,11 @@ def google_routes_traffic(origin, destination, departure_dt, api_key, route_pref
         if route_pref=="shortest":
             payload["requestedReferenceRoutes"]=["SHORTER_DISTANCE"]; payload["routingPreference"]="TRAFFIC_AWARE"
         fields=["routes.duration","routes.staticDuration","routes.distanceMeters","routes.routeLabels","routes.routeToken","routes.polyline.encodedPolyline"]
-        if include_tolls: fields.append("routes.travelAdvisory.tollInfo")
+        if include_tolls:
+            fields.extend([
+                "routes.travelAdvisory.tollInfo",
+                "routes.legs.travelAdvisory.tollInfo",
+            ])
         headers={"Content-Type":"application/json","X-Goog-Api-Key":api_key,"X-Goog-FieldMask":",".join(fields)}
         r=requests.post("https://routes.googleapis.com/directions/v2:computeRoutes",headers=headers,json=payload,timeout=15); r.raise_for_status()
         routes=r.json().get("routes",[])
@@ -861,11 +870,50 @@ def google_routes_traffic(origin, destination, departure_dt, api_key, route_pref
             try:return float(str(v).rstrip("s"))
             except:return 0.0
         traffic_min=sec(route.get("duration","0s"))/60; static_min=sec(route.get("staticDuration","0s"))/60; km=float(route.get("distanceMeters",0) or 0)/1000
-        toll_info=route.get("travelAdvisory",{}).get("tollInfo",{}); est=toll_info.get("estimatedPrice",[]) if isinstance(toll_info,dict) else []
-        toll_amount=money_to_float(est[0]) if est else 0.0; toll_known=bool(est)
+        route_toll_info = route.get("travelAdvisory", {}).get("tollInfo", {})
+        route_est = route_toll_info.get("estimatedPrice", []) if isinstance(route_toll_info, dict) else []
+
+        leg_toll_infos = []
+        for leg in route.get("legs", []) or []:
+            info = leg.get("travelAdvisory", {}).get("tollInfo", {})
+            if isinstance(info, dict) and info:
+                leg_toll_infos.append(info)
+
+        toll_detected = bool(route_toll_info) or bool(leg_toll_infos)
+        toll_amount = None
+        toll_known = False
+
+        # Priorité au total d'itinéraire renvoyé par Google.
+        if route_est:
+            toll_amount = sum(money_to_float(m) for m in route_est if isinstance(m, dict))
+            toll_known = True
+        elif leg_toll_infos:
+            # Secours : addition des prix connus par étape.
+            leg_prices = []
+            all_legs_priced = True
+            for info in leg_toll_infos:
+                prices = info.get("estimatedPrice", []) if isinstance(info, dict) else []
+                if not prices:
+                    all_legs_priced = False
+                    continue
+                leg_prices.append(sum(money_to_float(m) for m in prices if isinstance(m, dict)))
+            if leg_prices and all_legs_priced:
+                toll_amount = sum(leg_prices)
+                toll_known = True
+
         if traffic_min<=0 or km<=0:return None
-        return {"km":km,"min":traffic_min,"static_min":static_min,"traffic_delay_min":max(0.0,traffic_min-static_min),"source":"Google Routes trafic",
-                "geometry":decode_google_polyline(route.get("polyline",{}).get("encodedPolyline","")),"toll_amount":round(toll_amount,2),"toll_known":toll_known,"route_pref":route_pref}
+        return {
+            "km":km,
+            "min":traffic_min,
+            "static_min":static_min,
+            "traffic_delay_min":max(0.0,traffic_min-static_min),
+            "source":"Google Routes trafic",
+            "geometry":decode_google_polyline(route.get("polyline",{}).get("encodedPolyline","")),
+            "toll_amount":round(toll_amount,2) if toll_amount is not None else None,
+            "toll_known":toll_known,
+            "toll_detected":toll_detected,
+            "route_pref":route_pref,
+        }
     except Exception:
         return None
 
@@ -1177,6 +1225,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key, 
             "route_geometry": rb.get("geometry", []),
             "peage_estime": float(rb.get("toll_amount", 0) or 0),
             "peage_connu": bool(rb.get("toll_known", False)),
+            "peage_detecte": bool(rb.get("toll_detected", False)),
             "route_pref": rb.get("route_pref", route_pref),
         })
         out.append(r)
@@ -1248,6 +1297,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key, 
             "route_geometry": rb.get("geometry", []),
             "peage_estime": float(rb.get("toll_amount", 0) or 0),
             "peage_connu": bool(rb.get("toll_known", False)),
+            "peage_detecte": bool(rb.get("toll_detected", False)),
             "route_pref": rb.get("route_pref", route_pref),
         }
 
@@ -1344,45 +1394,67 @@ def load_fixed_radars():
         return pd.DataFrame(columns=["lat","lon","type","vma","id"])
 
 
-def radars_near_route(df, return_row=None, current_position=None, margin_deg=0.16):
-    """Filtre les radars autour de l'emprise de la tournée pour garder la carte fluide."""
-    pts = []
+def radars_near_route(df, return_row=None, current_position=None, margin_deg=0.06):
+    """Retourne uniquement les radars proches du tracé routier réel de la tournée."""
+    route_pts = []
+
+    def add_geometry(geom):
+        if not isinstance(geom, list) or not geom:
+            return
+        # Jusqu'à ~500 points pour conserver une bonne précision sans alourdir l'iPhone.
+        step = max(1, len(geom) // 500)
+        for p in geom[::step]:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                try:
+                    route_pts.append((float(p[0]), float(p[1])))
+                except Exception:
+                    pass
+
     for _, rr in df.iterrows():
-        if pd.notna(rr.get("lat")) and pd.notna(rr.get("lon")):
-            pts.append((float(rr.get("lat")), float(rr.get("lon"))))
-        geom = rr.get("route_geometry", [])
-        if isinstance(geom, list) and geom:
-            # Échantillonnage léger.
-            step = max(1, len(geom)//20)
-            pts.extend([(float(p[0]), float(p[1])) for p in geom[::step] if isinstance(p, (list,tuple)) and len(p)>=2])
+        add_geometry(rr.get("route_geometry", []))
     if return_row:
-        geom = return_row.get("route_geometry", [])
-        if isinstance(geom, list) and geom:
-            step = max(1, len(geom)//20)
-            pts.extend([(float(p[0]), float(p[1])) for p in geom[::step] if isinstance(p, (list,tuple)) and len(p)>=2])
-    if isinstance(current_position, dict):
-        try:
-            pts.append((float(current_position["latitude"]), float(current_position["longitude"])))
-        except Exception:
-            pass
-    if not pts:
+        add_geometry(return_row.get("route_geometry", []))
+
+    if not route_pts:
         return pd.DataFrame(columns=["lat","lon","type","vma","id"])
 
     all_radars = load_fixed_radars()
     if all_radars.empty:
         return all_radars
 
-    lats = [p[0] for p in pts]
-    lons = [p[1] for p in pts]
-    min_lat, max_lat = min(lats)-margin_deg, max(lats)+margin_deg
-    min_lon, max_lon = min(lons)-margin_deg, max(lons)+margin_deg
+    lats = [p[0] for p in route_pts]
+    lons = [p[1] for p in route_pts]
     subset = all_radars[
-        all_radars["lat"].between(min_lat, max_lat)
-        & all_radars["lon"].between(min_lon, max_lon)
+        all_radars["lat"].between(min(lats)-margin_deg, max(lats)+margin_deg)
+        & all_radars["lon"].between(min(lons)-margin_deg, max(lons)+margin_deg)
     ].copy()
 
-    # Évite une surcharge extrême dans les grandes agglomérations.
-    return subset.head(250).reset_index(drop=True)
+    if subset.empty:
+        return subset
+
+    # Distance approchée en km vers le point échantillonné le plus proche.
+    # 1° latitude ≈111 km ; longitude corrigée autour de la France.
+    import math as _math
+    mean_lat = sum(lats) / len(lats)
+    lon_km = 111.0 * _math.cos(_math.radians(mean_lat))
+    max_dist_km = 1.2
+
+    keep = []
+    for idx, rd in subset.iterrows():
+        rlat, rlon = float(rd["lat"]), float(rd["lon"])
+        best2 = None
+        for plat, plon in route_pts:
+            dy = (rlat - plat) * 111.0
+            dx = (rlon - plon) * lon_km
+            d2 = dx*dx + dy*dy
+            if best2 is None or d2 < best2:
+                best2 = d2
+                if best2 <= 0.04:  # ~200 m
+                    break
+        if best2 is not None and best2 <= max_dist_km * max_dist_km:
+            keep.append(idx)
+
+    return subset.loc[keep].head(250).reset_index(drop=True)
 
 
 
@@ -1548,7 +1620,9 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 "client":str(rr.get("nom_prospect","")),
                 "address":str(rr.get("adresse_complete","")),
                 "waze":str(rr.get("waze","#")),
+                "groute":google_drive_to_link(rr.get("adresse_complete","")),
                 "house":str(rr.get("street_view","#")),
+                "terrain":f"?terrain={quote_plus(str(rr.get('numero_rdv','')))}#terrain-{quote_plus(str(rr.get('numero_rdv','')))}",
                 "phone":str(rr.get("telephone_tel","")),
                 "distance":str(rr.get("distance_depuis_precedent_km","")),
                 "duration":fmt_duration(rr.get("temps_route_depuis_precedent_min","")),
@@ -1667,10 +1741,10 @@ html,body,#map{{margin:0;width:100%;height:100%;background:#070b14;font-family:-
 .maplibregl-ctrl-group{{border-radius:14px!important;overflow:hidden}}
 .maplibregl-popup-content{{background:#0b1220!important;color:#fff!important;border:1px solid #263248;border-radius:18px!important;padding:14px!important;box-shadow:0 16px 40px rgba(0,0,0,.45)!important}}
 .maplibregl-popup-tip{{border-top-color:#0b1220!important;border-bottom-color:#0b1220!important}}
-.stop-marker{{min-width:86px;background:#08111f;color:#fff;border:2px solid #00c2ff;border-radius:13px;padding:7px 9px;box-shadow:0 5px 18px rgba(0,194,255,.28);font-weight:900;text-align:center;line-height:1.1}}
-.stop-marker .t{{font-size:13px;color:#76e4ff}} .stop-marker .n{{font-size:12px;margin-top:4px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.stop-marker{{min-width:94px;background:#05070b;color:#fff;border:1px solid #222b39;border-radius:14px;padding:7px 9px;box-shadow:0 6px 20px rgba(0,0,0,.42);font-weight:900;text-align:center;line-height:1.1}}
+.stop-marker .rdv-head{{display:flex;align-items:center;justify-content:center;gap:6px}} .stop-marker .rdv-num{{width:23px;height:23px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:#00bfff;color:#03101a;font-size:12px;font-weight:950}} .stop-marker .t{{font-size:13px;color:#8beaff}} .stop-marker .n{{font-size:12px;margin-top:5px;max-width:155px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .base-marker{{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0b1220;border:3px solid #62f6b7;color:#fff;font-size:20px;box-shadow:0 4px 18px rgba(98,246,183,.35)}}
-.route-pill{{background:rgba(7,11,20,.94);color:#fff;border:1px solid #5e718e;border-radius:12px;padding:6px 9px;box-shadow:0 5px 18px rgba(0,0,0,.35);font-weight:850;font-size:12px;line-height:1.25;white-space:nowrap}}
+.route-pill{{background:rgba(52,57,65,.96);color:#fff;border:1px solid #737b87;border-radius:12px;padding:6px 9px;box-shadow:0 5px 18px rgba(0,0,0,.28);font-weight:850;font-size:12px;line-height:1.25;white-space:nowrap}}
 .route-pill .sub{{color:#80e8ff;font-weight:900}}
 .radar-marker{{width:34px;height:34px;border-radius:50%;background:#ff293d;border:3px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:950;box-shadow:0 4px 15px rgba(255,41,61,.45)}}
 .fuel-marker{{min-width:40px;height:38px;border-radius:13px;background:#0a8f63;border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:950;box-shadow:0 4px 15px rgba(10,143,99,.42);padding:0 5px}}
@@ -1712,17 +1786,19 @@ map.on("load",()=>{{
     const p=f.properties, c=f.geometry.coordinates;
     const el=document.createElement("div");
     if(p.kind==="base"){{ el.className="base-marker"; el.innerHTML="⌂"; }}
-    else{{ el.className="stop-marker"; el.innerHTML=`<div class="t">#${{esc(p.order)}} · ${{esc(p.time)}}</div><div class="n">${{esc(p.client)}}</div>`; }}
+    else{{ el.className="stop-marker"; el.innerHTML=`<div class="rdv-head"><span class="rdv-num">${{esc(p.order)}}</span><span class="t">${{esc(p.time)}}</span></div><div class="n">${{esc(p.client)}}</div>`; }}
     const marker=new maplibregl.Marker({{element:el,anchor:"bottom"}}).setLngLat(c).addTo(map);
     if(p.kind==="stop"){{
       const phone=p.phone?`<a class="pbtn" href="tel:${{esc(p.phone)}}">📞 Appeler</a>`:"";
       const toll=p.toll?` · 🛣️ ${{esc(p.toll)}}`:"";
-      const html=`<div class="popup-title">#${{esc(p.order)}} · ${{esc(p.time)}}</div>
+      const html=`<div class="popup-title"><span style="display:inline-flex;width:27px;height:27px;border-radius:50%;align-items:center;justify-content:center;background:#00bfff;color:#03101a;font-size:13px;margin-right:7px">${{esc(p.order)}}</span>${{esc(p.time)}}</div>
       <div class="popup-client">${{esc(p.client)}}</div><div class="popup-addr">${{esc(p.address)}}</div>
       <div class="popup-route">🚗 ${{esc(p.duration)}} · ${{esc(p.distance)}} km${{toll}}<br>⏰ Départ ${{esc(p.depart)}}</div>
       <a class="pbtn primary" target="_blank" href="${{esc(p.waze)}}">🚗 Waze</a>
-      <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>${{phone}}`;
-      marker.setPopup(new maplibregl.Popup({{offset:28,maxWidth:"320px"}}).setHTML(html));
+      <a class="pbtn" target="_blank" href="${{esc(p.groute)}}">🗺️ Trajet Google</a>
+      <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>
+      <a class="pbtn" target="_parent" href="${{esc(p.terrain)}}">🧠 Mode terrain</a>${{phone}}`;
+      marker.setPopup(new maplibregl.Popup({{offset:28,maxWidth:"340px"}}).setHTML(html));
     }} else {{
       marker.setPopup(new maplibregl.Popup({{offset:22}}).setHTML(`<b>⌂ Base</b><br>${{esc(p.subtitle)}}`));
     }}
@@ -2617,7 +2693,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.1 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.2 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2814,94 +2890,64 @@ except Exception as e:
 
 next_rdv = find_next_rdv(route_df)
 if next_rdv is not None:
-    st.subheader("🎯 Prochain arrêt")
-    st.markdown(f"""<div class="next-card"><div class="eyebrow">PROCHAIN ARRÊT</div><div class="time">{fmt_time(next_rdv.get('heure_rdv'))}</div><div class="client">{next_rdv.get('nom_prospect','')}</div><div class="address">{next_rdv.get('adresse_complete','')}</div><div class="route">🚗 {fmt_duration(next_rdv.get('temps_route_depuis_precedent_min',''))} · {next_rdv.get('distance_depuis_precedent_km','')} km{(' · 🛣️ ' + euro(next_rdv.get('peage_estime',0))) if float(next_rdv.get('peage_estime',0) or 0)>0 else ''}</div><div class="depart">⏰ Départ conseillé : {fmt_dt(next_rdv.get('depart_conseille'))}</div></div>""", unsafe_allow_html=True)
-    a1, a2 = st.columns(2)
-    a1.link_button("🚗 WAZE", next_rdv.get("waze","#"), use_container_width=True)
-    a2.link_button("🏠 VOIR MAISON", next_rdv.get("street_view","#"), use_container_width=True)
-    a3, a4 = st.columns(2)
-    if next_rdv.get("telephone_tel"):
-        a3.link_button("📞 APPELER", f"tel:{next_rdv.get('telephone_tel')}", use_container_width=True)
-    a4.link_button("💬 WHATSAPP", whatsapp_report_link(client=next_rdv.get('nom_prospect',''), departement=extract_departement(next_rdv.get('adresse_complete','')), adresse=next_rdv.get('adresse_complete',''), telephone=next_rdv.get('telephone','')), use_container_width=True)
-    with st.expander("🧭 Comparer les itinéraires", expanded=False):
-        st.caption("Même départ, même destination et même heure pour toutes les options.")
+    with st.expander("🧭 Comparer les itinéraires du prochain trajet", expanded=False):
+        st.caption("Même départ, même destination et même heure pour chaque option.")
         if google_key and isinstance(next_rdv.get("rdv_datetime"), datetime):
             idxs = route_df.index[
                 route_df["numero_rdv"].astype(str) == str(next_rdv.get("numero_rdv"))
             ].tolist()
             ni = idxs[0] if idxs else 0
-
-            cmp_origin = (
-                start_address
-                if ni <= 0
-                else route_df.iloc[ni-1].get("adresse_complete", start_address)
-            )
+            cmp_origin = start_address if ni <= 0 else route_df.iloc[ni-1].get("adresse_complete", start_address)
             cmp_destination = next_rdv.get("adresse_complete", "")
-            dep_guess = (
-                next_rdv.get("depart_conseille")
-                or (next_rdv.get("rdv_datetime") - timedelta(hours=2))
-            )
+            dep_guess = next_rdv.get("depart_conseille") or (next_rdv.get("rdv_datetime") - timedelta(hours=2))
 
             results_by_pref = {}
-            # Les trois variantes routières indépendantes.
             for pk in ["recommended", "no_tolls", "no_highways", "shortest"]:
                 rr_cmp = google_routes_traffic(
-                    cmp_origin,
-                    cmp_destination,
-                    dep_guess,
-                    google_key,
-                    route_pref=pk,
-                    include_tolls=True,
+                    cmp_origin, cmp_destination, dep_guess, google_key,
+                    route_pref=pk, include_tolls=True,
                 )
                 if rr_cmp:
                     results_by_pref[pk] = rr_cmp
 
-            # Contrôle de cohérence :
-            # si une autre variante testée fait moins de km que SHORTER_DISTANCE,
-            # le tableau "Plus court" affiche réellement la moins kilométrée
-            # parmi toutes les variantes obtenues, au lieu d'afficher un résultat paradoxal.
+            # La ligne "Plus court" reste silencieusement cohérente :
+            # on affiche la variante la moins kilométrée obtenue.
             available = list(results_by_pref.items())
-            shortest_note = ""
             if available:
-                min_key, min_route = min(
+                _, min_route = min(
                     available,
                     key=lambda item: float(item[1].get("km", 10**15) or 10**15)
                 )
-                google_short = results_by_pref.get("shortest")
-                if google_short is None or float(min_route.get("km", 10**15)) < float(google_short.get("km", 10**15)) - 0.1:
+                if "shortest" not in results_by_pref or float(min_route.get("km", 10**15)) < float(results_by_pref["shortest"].get("km", 10**15)) - 0.1:
                     results_by_pref["shortest"] = dict(min_route)
-                    shortest_note = f"Meilleur kilométrage trouvé ({ROUTE_PREF_LABELS.get(min_key, min_key)})"
 
             rows = []
             for pk in ["recommended", "no_tolls", "shortest", "no_highways"]:
                 rr_cmp = results_by_pref.get(pk)
                 if not rr_cmp:
                     continue
-                note = shortest_note if pk == "shortest" and shortest_note else ""
+
+                amount = rr_cmp.get("toll_amount")
+                if rr_cmp.get("toll_known") and amount is not None:
+                    toll_txt = euro(amount)
+                elif rr_cmp.get("toll_detected"):
+                    toll_txt = "Péage · tarif indisponible"
+                else:
+                    toll_txt = "Aucun péage détecté"
+
                 rows.append({
                     "Itinéraire": ROUTE_PREF_LABELS[pk],
                     "Temps": fmt_duration(rr_cmp.get("min")),
                     "Distance": f"{float(rr_cmp.get('km',0)):.0f} km",
-                    "Péage": euro(rr_cmp.get("toll_amount",0)) if float(rr_cmp.get("toll_amount",0) or 0) > 0 else "0 €",
-                    "": note,
+                    "Péage": toll_txt,
                 })
 
             if rows:
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                if shortest_note:
-                    st.info("ℹ️ Google SHORTER_DISTANCE est expérimental. Routage PRO a corrigé l'affichage pour que « Plus court » soit réellement la variante la moins kilométrée parmi celles calculées.")
             else:
                 st.info("Comparaison indisponible pour ce trajet.")
         else:
             st.info("Comparaison disponible pour les trajets futurs avec Google Routes.")
-
-st.subheader("🧭 Suite de la tournée")
-for _, rr in route_df.iterrows():
-    is_next = next_rdv is not None and str(rr.get("numero_rdv")) == str(next_rdv.get("numero_rdv"))
-    badge = " · PROCHAIN" if is_next else ""
-    st.markdown(f"""<div class="route-card"><strong>#{rr.get('numero_rdv','')} · {fmt_time(rr.get('heure_rdv'))} · {rr.get('nom_prospect','')}{badge}</strong><br><span class="muted">{rr.get('adresse_complete','')}</span><br><span class="muted">🚗 {fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km{(' · 🛣️ ' + euro(rr.get('peage_estime',0))) if float(rr.get('peage_estime',0) or 0)>0 else ''}</span> &nbsp; <span class="go">⏰ {fmt_dt(rr.get('depart_conseille'))}</span></div>""", unsafe_allow_html=True)
-
-st.divider()
 
 with st.expander("📊 Détails de tournée (optionnel)", expanded=False):
     st.caption("Toutes les données restent disponibles, mais sont masquées par défaut pour garder l'écran terrain simple.")
@@ -3084,11 +3130,15 @@ if search_q.strip():
         st.info("Aucun résultat trouvé.")
 
 st.subheader("📋 Mode terrain")
+selected_terrain = str(st.query_params.get("terrain", "") or "")
 for _, r in route_df.iterrows():
+    terrain_no = str(r.get("numero_rdv", ""))
+    st.markdown(f'<div id="terrain-{terrain_no}"></div>', unsafe_allow_html=True)
     pause = r.get('pause_avant_rdv_min', '')
     pause_txt = "" if pause == "" else (f" · Pause dispo : {fmt_duration(pause)}" if to_minutes(pause) >= 0 else f" · ⚠ Retard probable : {fmt_duration(abs(to_minutes(pause)))}")
     title = f"RDV {r.get('numero_rdv','')} · {fmt_time(r.get('heure_rdv'))} · {r.get('nom_prospect','')}{pause_txt}"
-    with st.expander(title, expanded=(str(r.get('ordre','')) == '1')):
+    is_selected_terrain = bool(selected_terrain) and selected_terrain == terrain_no
+    with st.expander(title, expanded=(is_selected_terrain or (not selected_terrain and str(r.get('ordre','')) == '1'))):
         c1, c2 = st.columns([2, 1])
         with c1:
             st.markdown(f"**Adresse :** {r.get('adresse_complete','')}")
@@ -3180,127 +3230,128 @@ for _, r in route_df.iterrows():
             save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time, details_crm, analyse_ia)
             st.success("Compte rendu enregistré.")
 
-with st.expander("🗺️ Carte secondaire", expanded=False):
-    st.caption("La carte principale est affichée en haut de l’application.")
+with st.expander("📤 Documents & exports", expanded=False):
+    include_photos = st.checkbox("Essayer d'intégrer les photos Street View dans le PDF", value=bool(google_key), help="Nécessite une clé Google Maps API. Sinon le PDF contient le lien Voir maison cliquable.")
+    pdf_bytes = create_pdf(route_df, return_row, start_address, include_photos, google_key, int(visit_min))
+    csv_bytes = to_recap_csv(route_df, return_row)
 
-st.subheader("📤 Documents & exports")
-include_photos = st.checkbox("Essayer d'intégrer les photos Street View dans le PDF", value=bool(google_key), help="Nécessite une clé Google Maps API. Sinon le PDF contient le lien Voir maison cliquable.")
-pdf_bytes = create_pdf(route_df, return_row, start_address, include_photos, google_key, int(visit_min))
-csv_bytes = to_recap_csv(route_df, return_row)
-
-c1, c2 = st.columns(2)
-with c1:
-    st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v18.pdf", mime="application/pdf", use_container_width=True)
-with c2:
-    st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v18.csv", mime="text/csv", use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("📄 Télécharger PDF enrichi cliquable", data=pdf_bytes, file_name="tournee_terrain_v18.pdf", mime="application/pdf", use_container_width=True)
+    with c2:
+        st.download_button("💾 Sauvegarde CSV réutilisable", data=csv_bytes, file_name="tournee_sauvegarde_v18.csv", mime="text/csv", use_container_width=True)
 
 
 
-st.subheader("💰 Indemnités kilométriques — V18 mensuelle")
-st.caption("Objectif : une note mensuelle professionnelle, avec historique des journées et barème modifiable si les règles changent.")
 
-# Registre du jour courant, sauvegardé automatiquement en historique local Streamlit.
-current_register_base = build_ik_register(route_df, return_row, st.session_state.get("sidebar_return_ik", True), start_address)
-if not current_register_base.empty:
-    saved_path = save_ik_history(current_register_base)
-    if saved_path:
-        st.success(f"Journée enregistrée dans l'historique IK : {saved_path.name}")
+with st.expander("💰 Indemnités kilométriques", expanded=False):
+    st.caption("Objectif : une note mensuelle professionnelle, avec historique des journées et barème modifiable si les règles changent.")
 
-with st.expander("⚙️ Paramètres de la note IK", expanded=False):
-    a,b,c = st.columns(3)
-    with a:
-        beneficiaire = st.text_input("Bénéficiaire", value=settings.get("beneficiaire", "Mr Dahan"))
-        societe = st.text_input("Société à facturer / rembourser", value=settings.get("societe", ""))
-        periode = st.text_input("Libellé période", value=datetime.now().strftime("%B %Y"))
-    with b:
-        vehicule = st.text_input("Véhicule", value=settings.get("vehicule", ""))
-        immat = st.text_input("Immatriculation", value=settings.get("immat", ""))
-        cv = st.selectbox("Puissance fiscale", options=[3,4,5,6,7], index=[3,4,5,6,7].index(st.session_state.get("sidebar_cv", 7)), help="7 = 7 CV et plus")
-    with c:
-        electric = st.checkbox("Véhicule 100% électrique (+20%)", value=st.session_state.get("sidebar_electric", False))
-        include_return_ik = st.checkbox("Inclure le retour à la base", value=st.session_state.get("sidebar_return_ik", True))
-        st.info("Mode appliqué : " + (f"forfait interne {sidebar_manual_rate:.3f} €/km" if sidebar_ik_mode == "manuel" else "barème officiel paramétrable"))
-
-    custom_bareme_enabled = st.checkbox("Afficher / modifier le barème IK", value=False)
-    custom_bareme = custom_bareme_from_inputs("ik_custom") if custom_bareme_enabled else IK_BAREME_2026
-    save_app_settings({
-        "beneficiaire": beneficiaire, "societe": societe, "vehicule": vehicule, "immat": immat,
-        "sidebar_cv": int(cv), "sidebar_electric": bool(electric), "sidebar_return_ik": bool(include_return_ik),
-    })
-
-with st.expander("📚 Historique / facturation IK", expanded=True):
-    h1, h2, h3 = st.columns([1,1,2])
-    today = date.today()
-    with h1:
-        period_start = st.date_input("Période du", value=date(today.year, today.month, 1))
-    with h2:
-        period_end = st.date_input("Au", value=today)
-    with h3:
-        uploaded_history = st.file_uploader("Ajouter un registre IK CSV ancien si besoin", type=["csv"], key="ik_history_upload")
-
-    history_df = load_ik_history()
-    frames = []
-    if not history_df.empty:
-        frames.append(history_df)
-    # Toujours inclure la journée courante pour éviter d'attendre une sauvegarde serveur.
+    # Registre du jour courant, sauvegardé automatiquement en historique local Streamlit.
+    current_register_base = build_ik_register(route_df, return_row, st.session_state.get("sidebar_return_ik", True), start_address)
     if not current_register_base.empty:
-        today_df = current_register_base.copy()
-        today_df["Source"] = "journée actuelle"
-        frames.append(today_df)
-    if uploaded_history is not None:
-        try:
-            extra = pd.read_csv(uploaded_history, sep=";")
-            extra["Source"] = uploaded_history.name
-            frames.append(extra)
-        except Exception as e:
-            st.warning(f"Registre ajouté illisible : {e}")
+        saved_path = save_ik_history(current_register_base)
+        if saved_path:
+            st.success(f"Journée enregistrée dans l'historique IK : {saved_path.name}")
 
-    all_register = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    st.markdown("#### ⚙️ Paramètres de la note IK")
+    with st.container(border=True):
+        a,b,c = st.columns(3)
+        with a:
+            beneficiaire = st.text_input("Bénéficiaire", value=settings.get("beneficiaire", "Mr Dahan"))
+            societe = st.text_input("Société à facturer / rembourser", value=settings.get("societe", ""))
+            periode = st.text_input("Libellé période", value=datetime.now().strftime("%B %Y"))
+        with b:
+            vehicule = st.text_input("Véhicule", value=settings.get("vehicule", ""))
+            immat = st.text_input("Immatriculation", value=settings.get("immat", ""))
+            cv = st.selectbox("Puissance fiscale", options=[3,4,5,6,7], index=[3,4,5,6,7].index(st.session_state.get("sidebar_cv", 7)), help="7 = 7 CV et plus")
+        with c:
+            electric = st.checkbox("Véhicule 100% électrique (+20%)", value=st.session_state.get("sidebar_electric", False))
+            include_return_ik = st.checkbox("Inclure le retour à la base", value=st.session_state.get("sidebar_return_ik", True))
+            st.info("Mode appliqué : " + (f"forfait interne {sidebar_manual_rate:.3f} €/km" if sidebar_ik_mode == "manuel" else "barème officiel paramétrable"))
+
+        custom_bareme_enabled = st.checkbox("Afficher / modifier le barème IK", value=False)
+        custom_bareme = custom_bareme_from_inputs("ik_custom") if custom_bareme_enabled else IK_BAREME_2026
+        save_app_settings({
+            "beneficiaire": beneficiaire, "societe": societe, "vehicule": vehicule, "immat": immat,
+            "sidebar_cv": int(cv), "sidebar_electric": bool(electric), "sidebar_return_ik": bool(include_return_ik),
+        })
+
+    st.markdown("#### 📚 Historique / facturation IK")
+    with st.container(border=True):
+        h1, h2, h3 = st.columns([1,1,2])
+        today = date.today()
+        with h1:
+            period_start = st.date_input("Période du", value=date(today.year, today.month, 1))
+        with h2:
+            period_end = st.date_input("Au", value=today)
+        with h3:
+            uploaded_history = st.file_uploader("Ajouter un registre IK CSV ancien si besoin", type=["csv"], key="ik_history_upload")
+
+        history_df = load_ik_history()
+        frames = []
+        if not history_df.empty:
+            frames.append(history_df)
+        # Toujours inclure la journée courante pour éviter d'attendre une sauvegarde serveur.
+        if not current_register_base.empty:
+            today_df = current_register_base.copy()
+            today_df["Source"] = "journée actuelle"
+            frames.append(today_df)
+        if uploaded_history is not None:
+            try:
+                extra = pd.read_csv(uploaded_history, sep=";")
+                extra["Source"] = uploaded_history.name
+                frames.append(extra)
+            except Exception as e:
+                st.warning(f"Registre ajouté illisible : {e}")
+
+        all_register = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     
-    if not all_register.empty and "Date" in all_register.columns:
-        tmp = all_register.copy()
-        parsed = pd.to_datetime(tmp["Date"], dayfirst=True, errors="coerce")
-        monthly_register = tmp[(parsed.dt.date >= period_start) & (parsed.dt.date <= period_end)].copy()
-    else:
-        monthly_register = pd.DataFrame()
-    if not monthly_register.empty:
-        # Déduplique les lignes principales pour éviter les doublons de la journée actuelle + historique.
-        dedup_cols = [c for c in ["Date", "Objet", "Arrivée", "Km", "Justificatif"] if c in monthly_register.columns]
-        monthly_register = monthly_register.drop_duplicates(subset=dedup_cols, keep="last") if dedup_cols else monthly_register
-    st.caption("L'historique est conservé tant que l'application Streamlit garde son espace temporaire. Pour un archivage durable, télécharge le CSV mensuel.")
+        if not all_register.empty and "Date" in all_register.columns:
+            tmp = all_register.copy()
+            parsed = pd.to_datetime(tmp["Date"], dayfirst=True, errors="coerce")
+            monthly_register = tmp[(parsed.dt.date >= period_start) & (parsed.dt.date <= period_end)].copy()
+        else:
+            monthly_register = pd.DataFrame()
+        if not monthly_register.empty:
+            # Déduplique les lignes principales pour éviter les doublons de la journée actuelle + historique.
+            dedup_cols = [c for c in ["Date", "Objet", "Arrivée", "Km", "Justificatif"] if c in monthly_register.columns]
+            monthly_register = monthly_register.drop_duplicates(subset=dedup_cols, keep="last") if dedup_cols else monthly_register
+        st.caption("L'historique est conservé tant que l'application Streamlit garde son espace temporaire. Pour un archivage durable, télécharge le CSV mensuel.")
 
-ik_register = monthly_register if 'monthly_register' in locals() and not monthly_register.empty else current_register_base
-ik_register = ik_register.copy()
-total_ik_km = float(pd.to_numeric(ik_register.get("Km", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if not ik_register.empty else 0.0
-ik_amount, ik_formula = calc_ik_amount_flexible(total_ik_km, cv=cv, electric=electric, bareme=custom_bareme, mode=sidebar_ik_mode, manual_rate=sidebar_manual_rate)
-ik_register = add_ik_amounts_to_register(ik_register, ik_amount)
+    ik_register = monthly_register if 'monthly_register' in locals() and not monthly_register.empty else current_register_base
+    ik_register = ik_register.copy()
+    total_ik_km = float(pd.to_numeric(ik_register.get("Km", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if not ik_register.empty else 0.0
+    ik_amount, ik_formula = calc_ik_amount_flexible(total_ik_km, cv=cv, electric=electric, bareme=custom_bareme, mode=sidebar_ik_mode, manual_rate=sidebar_manual_rate)
+    ik_register = add_ik_amounts_to_register(ik_register, ik_amount)
 
-k1,k2,k3,k4 = st.columns(4)
-k1.metric("Km IK période", f"{total_ik_km:.1f} km")
-k2.metric("Montant IK", euro(ik_amount))
-k3.metric("Barème", f"{cv} CV" + (" électrique" if electric else ""))
-k4.metric("Lignes", len(ik_register))
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric("Km IK période", f"{total_ik_km:.1f} km")
+    k2.metric("Montant IK", euro(ik_amount))
+    k3.metric("Barème", f"{cv} CV" + (" électrique" if electric else ""))
+    k4.metric("Lignes", len(ik_register))
 
-st.dataframe(ik_register, use_container_width=True, hide_index=True)
+    st.dataframe(ik_register, use_container_width=True, hide_index=True)
 
-ik_params = {
-    "beneficiaire": beneficiaire,
-    "societe": societe,
-    "periode": periode,
-    "vehicule": vehicule,
-    "immat": immat,
-    "cv": cv,
-    "electric": electric,
-    "bareme": "Barème kilométrique paramétrable — voitures",
-    "amount": ik_amount,
-    "formula": ik_formula,
-}
-ik_pdf = create_ik_pdf(ik_register, ik_params)
-d1,d2 = st.columns(2)
-with d1:
-    st.download_button("📄 Télécharger la note IK mensuelle PDF", data=ik_pdf, file_name="note_indemnites_kilometriques_mensuelle.pdf", mime="application/pdf", use_container_width=True)
-with d2:
-    st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
+    ik_params = {
+        "beneficiaire": beneficiaire,
+        "societe": societe,
+        "periode": periode,
+        "vehicule": vehicule,
+        "immat": immat,
+        "cv": cv,
+        "electric": electric,
+        "bareme": "Barème kilométrique paramétrable — voitures",
+        "amount": ik_amount,
+        "formula": ik_formula,
+    }
+    ik_pdf = create_ik_pdf(ik_register, ik_params)
+    d1,d2 = st.columns(2)
+    with d1:
+        st.download_button("📄 Télécharger la note IK mensuelle PDF", data=ik_pdf, file_name="note_indemnites_kilometriques_mensuelle.pdf", mime="application/pdf", use_container_width=True)
+    with d2:
+        st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("Routage PRO · GDH — V28.1 — 28/07/2026 · Cockpit · GPS · radars fixes · stations-service · trafic Google")
+
+st.caption("Routage PRO · GDH — V28.2 — 28/07/2026 · Cockpit épuré · GPS · radars sur trajet · stations-service · trafic Google")
