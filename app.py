@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.5.2.1 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.5.3.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.5.2 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.5.3 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.5.2 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.5.3 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -1598,18 +1598,26 @@ def _html_escape(s):
 
 
 def route_visual_midpoint(coords):
-    """Milieu du trajet basé sur la longueur cumulée de la polyline."""
+    """Milieu du trajet renvoyé au format MapLibre [longitude, latitude].
+
+    Les géométries Google de cette application sont stockées [latitude, longitude].
+    """
     if not isinstance(coords, list) or len(coords) < 2:
-        return coords[0] if coords else None
+        if not coords:
+            return None
+        try:
+            return [float(coords[0][1]), float(coords[0][0])]
+        except Exception:
+            return None
 
     import math as _math
-
     segs = []
     total = 0.0
+
     for a, b in zip(coords[:-1], coords[1:]):
         try:
-            lon1, lat1 = float(a[0]), float(a[1])
-            lon2, lat2 = float(b[0]), float(b[1])
+            lat1, lon1 = float(a[0]), float(a[1])
+            lat2, lon2 = float(b[0]), float(b[1])
         except Exception:
             continue
 
@@ -1617,27 +1625,25 @@ def route_visual_midpoint(coords):
         dx = (lon2 - lon1) * 111.0 * _math.cos(mean_lat)
         dy = (lat2 - lat1) * 111.0
         d = _math.hypot(dx, dy)
-
-        segs.append((a, b, d))
+        segs.append((lat1, lon1, lat2, lon2, d))
         total += d
 
     if total <= 0 or not segs:
-        return coords[len(coords)//2]
+        p = coords[len(coords)//2]
+        return [float(p[1]), float(p[0])]
 
     target = total / 2.0
     acc = 0.0
-
-    for a, b, d in segs:
+    for lat1, lon1, lat2, lon2, d in segs:
         if acc + d >= target:
-            if d <= 0:
-                return a
-            ratio = (target - acc) / d
-            lon = float(a[0]) + ratio * (float(b[0]) - float(a[0]))
-            lat = float(a[1]) + ratio * (float(b[1]) - float(a[1]))
+            ratio = 0.0 if d <= 0 else (target - acc) / d
+            lat = lat1 + ratio * (lat2 - lat1)
+            lon = lon1 + ratio * (lon2 - lon1)
             return [lon, lat]
         acc += d
 
-    return coords[-1]
+    lat, lon = float(coords[-1][0]), float(coords[-1][1])
+    return [lon, lat]
 
 
 def build_maplibre_html(df, return_row, start_address, start_geo, current_position=None,
@@ -1867,7 +1873,7 @@ map.on("load",()=>{{
     const alertLine=l.alert?`<div class="delay-line">⚠ RETARD PROBABLE · +${{esc(l.delay_min)}} min</div>`:"";
     el.innerHTML=esc(l.line1)+`<br><span class="sub">${{esc(l.line2)}}</span>`+alertLine;
     new maplibregl.Marker({{element:el,anchor:"center"}})
-      .setLngLat([Number(l.coords[0]), Number(l.coords[1])])
+      .setLngLat(l.coords)
       .addTo(map);
   }});
 
@@ -2782,7 +2788,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.5.2 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.5.3 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2874,7 +2880,7 @@ total_tolls=float(pd.to_numeric(route_df.get("peage_estime",pd.Series(dtype=floa
 
 
 # ==========================================================
-# V28.5.2 — Mode terrain direct depuis la carte
+# V28.5.3 — Mode terrain direct depuis la carte
 # ==========================================================
 terrain_direct_no = str(st.query_params.get("terrain", "") or "")
 if terrain_direct_no:
@@ -3489,4 +3495,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.5.2 — 28/07/2026 · alerte retard centrée sur trajet · GPS · radars · stations-service · trafic Google")
+st.caption("Routage PRO · GDH — V28.5.3 — 28/07/2026 · alerte retard ancrée sur le trajet · GPS · radars · stations-service · trafic Google")
