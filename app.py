@@ -17,13 +17,20 @@ from geopy.extra.rate_limiter import RateLimiter
 from geopy.distance import geodesic
 import folium
 from streamlit_folium import st_folium
+
+try:
+    from streamlit_geolocation import streamlit_geolocation
+    GEOLOCATION_COMPONENT_AVAILABLE = True
+except Exception:
+    streamlit_geolocation = None
+    GEOLOCATION_COMPONENT_AVAILABLE = False
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V27.1 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V27.2 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -108,7 +115,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO — V27.1 — 28/07/2026")
+st.title("🚗 Routage PRO — V27.2 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -252,7 +259,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V27.1 — lisibilité des champs IA désactivés sur iPhone */
+/* V27.2 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -771,7 +778,7 @@ def google_routes_traffic(origin, destination, departure_dt, api_key, route_pref
         if include_tolls: payload["extraComputations"]=["TOLLS"]
         if route_pref=="shortest":
             payload["requestedReferenceRoutes"]=["SHORTER_DISTANCE"]; payload["routingPreference"]="TRAFFIC_AWARE"
-        fields=["routes.duration","routes.staticDuration","routes.distanceMeters","routes.routeLabels","routes.polyline.encodedPolyline"]
+        fields=["routes.duration","routes.staticDuration","routes.distanceMeters","routes.routeLabels","routes.routeToken","routes.polyline.encodedPolyline"]
         if include_tolls: fields.append("routes.travelAdvisory.tollInfo")
         headers={"Content-Type":"application/json","X-Goog-Api-Key":api_key,"X-Goog-FieldMask":",".join(fields)}
         r=requests.post("https://routes.googleapis.com/directions/v2:computeRoutes",headers=headers,json=payload,timeout=15); r.raise_for_status()
@@ -779,8 +786,18 @@ def google_routes_traffic(origin, destination, departure_dt, api_key, route_pref
         if not routes: return None
         route=routes[0]
         if route_pref=="shortest":
-            for cand in routes:
-                if "SHORTER_DISTANCE" in cand.get("routeLabels",[]): route=cand; break
+            shorter_candidates = [
+                cand for cand in routes
+                if "SHORTER_DISTANCE" in cand.get("routeLabels", [])
+            ]
+            if not shorter_candidates:
+                return None
+            # Si Google renvoie plusieurs variantes SHORTER_DISTANCE,
+            # on garde réellement la moins kilométrée.
+            route = min(
+                shorter_candidates,
+                key=lambda cand: float(cand.get("distanceMeters", 10**15) or 10**15)
+            )
         def sec(v):
             try:return float(str(v).rstrip("s"))
             except:return 0.0
@@ -1178,7 +1195,7 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key, 
     return route_df, return_row, geo.get(start_address, {})
 
 
-def make_map(df, return_row, start_address, start_geo, interactive=True):
+def make_map(df, return_row, start_address, start_geo, interactive=True, current_position=None):
     map_df = df.copy()
     if return_row:
         map_df = pd.concat([map_df, pd.DataFrame([return_row])], ignore_index=True)
@@ -1202,6 +1219,37 @@ def make_map(df, return_row, start_address, start_geo, interactive=True):
                       popup=folium.Popup(f"<b>🏠 Base</b><br>{start_address}", max_width=320),
                       icon=folium.Icon(color="green", icon="home")).add_to(m)
         points.append([start_geo["lat"], start_geo["lon"]])
+
+    # Position GPS actuelle de l'iPhone.
+    if isinstance(current_position, dict):
+        gps_lat = current_position.get("latitude")
+        gps_lon = current_position.get("longitude")
+        if gps_lat is not None and gps_lon is not None:
+            try:
+                gps_lat = float(gps_lat)
+                gps_lon = float(gps_lon)
+                folium.CircleMarker(
+                    [gps_lat, gps_lon],
+                    radius=10,
+                    tooltip="📍 Vous êtes ici",
+                    popup=folium.Popup("<b>📍 Ma position actuelle</b>", max_width=220),
+                    color="#ffffff",
+                    weight=3,
+                    fill=True,
+                    fill_color="#2563eb",
+                    fill_opacity=1.0,
+                ).add_to(m)
+                folium.CircleMarker(
+                    [gps_lat, gps_lon],
+                    radius=18,
+                    color="#2563eb",
+                    weight=2,
+                    fill=False,
+                    opacity=0.35,
+                ).add_to(m)
+                points.append([gps_lat, gps_lon])
+            except Exception:
+                pass
 
     for _, r in df.iterrows():
         if not r.get("lat") or not r.get("lon"):
@@ -1252,7 +1300,8 @@ def make_map(df, return_row, start_address, start_geo, interactive=True):
         if isinstance(geom, list) and len(geom) >= 2:
             folium.PolyLine(geom, weight=5, opacity=0.85, color="red", dash_array="8,6").add_to(m)
             mid = geom[len(geom)//2]
-            route_label = f"""<div style='font-size:12px;line-height:15px;font-weight:850;background:rgba(17,24,39,.94);color:#fff;border:1px solid #64748b;border-radius:9px;padding:5px 7px;white-space:nowrap;'>🏠 Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km</div>"""
+            return_toll_txt = f" · 🛣️ {euro(return_row.get('peage_estime',0))}" if float(return_row.get('peage_estime',0) or 0) > 0 else ""
+            route_label = f"""<div style='font-size:12px;line-height:15px;font-weight:900;background:#ffffff;color:#111827;border:2px solid #111827;border-radius:9px;padding:6px 8px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);'>🏠 Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km{return_toll_txt}</div>"""
             folium.map.Marker(mid, icon=folium.DivIcon(html=route_label)).add_to(m)
 
     try:
@@ -1993,7 +2042,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V27.1 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V27.2 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2105,12 +2154,34 @@ if fmt_dt(retour_estime): summary_bits.append(f"retour ~{fmt_dt(retour_estime)}"
 st.markdown(f"""<div class="day-summary"><div class="day-summary-title">{summary_title}</div><div class="day-summary-line">{" · ".join(summary_bits)}</div></div>""", unsafe_allow_html=True)
 
 st.subheader("🗺️ Ma tournée")
+
+# GPS iPhone : l'utilisateur garde le contrôle et autorise explicitement la localisation.
+current_position = st.session_state.get("current_position")
+with st.expander("📍 Ma position sur la carte", expanded=False):
+    if GEOLOCATION_COMPONENT_AVAILABLE:
+        st.caption("Sur iPhone, appuie sur le bouton ci-dessous puis autorise Safari à utiliser ta position.")
+        gps_result = streamlit_geolocation()
+        if isinstance(gps_result, dict) and gps_result.get("latitude") is not None and gps_result.get("longitude") is not None:
+            st.session_state["current_position"] = {
+                "latitude": gps_result.get("latitude"),
+                "longitude": gps_result.get("longitude"),
+                "accuracy": gps_result.get("accuracy"),
+            }
+            current_position = st.session_state["current_position"]
+            accuracy = current_position.get("accuracy")
+            if accuracy:
+                st.success(f"📍 Position obtenue · précision ≈ {float(accuracy):.0f} m")
+            else:
+                st.success("📍 Position obtenue")
+    else:
+        st.warning("Le module GPS n'est pas installé. Ajoute `streamlit-geolocation` dans requirements.txt.")
+
 st.markdown('<div class="map-legend">Durée · distance · heure de départ conseillée directement sur les trajets. Touchez un RDV pour Waze, Voir maison ou Appeler.</div>', unsafe_allow_html=True)
 map_interactive_top = st.toggle("Déverrouiller la carte", value=False, key="map_interactive_top", help="Laisse désactivé sur iPhone pour faire défiler la page normalement.")
 if not map_interactive_top:
     st.markdown("""<style>iframe[title="streamlit_folium.st_folium"]{pointer-events:none!important;}</style>""", unsafe_allow_html=True)
 try:
-    st_folium(make_map(route_df, return_row, start_address, start_geo, interactive=map_interactive_top), height=560, use_container_width=True, key="main_map_v27")
+    st_folium(make_map(route_df, return_row, start_address, start_geo, interactive=map_interactive_top, current_position=current_position), height=560, use_container_width=True, key="main_map_v27")
 except Exception as e:
     st.warning(f"Carte non disponible : {e}")
 
@@ -2126,17 +2197,76 @@ if next_rdv is not None:
         a3.link_button("📞 APPELER", f"tel:{next_rdv.get('telephone_tel')}", use_container_width=True)
     a4.link_button("💬 WHATSAPP", whatsapp_report_link(client=next_rdv.get('nom_prospect',''), departement=extract_departement(next_rdv.get('adresse_complete','')), adresse=next_rdv.get('adresse_complete',''), telephone=next_rdv.get('telephone','')), use_container_width=True)
     with st.expander("🧭 Comparer les itinéraires", expanded=False):
+        st.caption("Même départ, même destination et même heure pour toutes les options.")
         if google_key and isinstance(next_rdv.get("rdv_datetime"), datetime):
-            idxs=route_df.index[route_df["numero_rdv"].astype(str)==str(next_rdv.get("numero_rdv"))].tolist(); ni=idxs[0] if idxs else 0
-            cmp_origin=start_address if ni<=0 else route_df.iloc[ni-1].get("adresse_complete",start_address)
-            dep_guess=next_rdv.get("depart_conseille") or (next_rdv.get("rdv_datetime")-timedelta(hours=2))
-            rows=[]
-            for pk,pl in ROUTE_PREF_LABELS.items():
-                rr_cmp=google_routes_traffic(cmp_origin,next_rdv.get("adresse_complete",""),dep_guess,google_key,route_pref=pk,include_tolls=True)
-                if rr_cmp: rows.append({"Itinéraire":pl,"Temps":fmt_duration(rr_cmp.get("min")),"Distance":f"{float(rr_cmp.get('km',0)):.0f} km","Péage":euro(rr_cmp.get("toll_amount",0)) if float(rr_cmp.get("toll_amount",0) or 0)>0 else "0 €"})
-            if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-            else: st.info("Comparaison indisponible pour ce trajet.")
-        else: st.info("Comparaison disponible pour les trajets futurs.")
+            idxs = route_df.index[
+                route_df["numero_rdv"].astype(str) == str(next_rdv.get("numero_rdv"))
+            ].tolist()
+            ni = idxs[0] if idxs else 0
+
+            cmp_origin = (
+                start_address
+                if ni <= 0
+                else route_df.iloc[ni-1].get("adresse_complete", start_address)
+            )
+            cmp_destination = next_rdv.get("adresse_complete", "")
+            dep_guess = (
+                next_rdv.get("depart_conseille")
+                or (next_rdv.get("rdv_datetime") - timedelta(hours=2))
+            )
+
+            results_by_pref = {}
+            # Les trois variantes routières indépendantes.
+            for pk in ["recommended", "no_tolls", "no_highways", "shortest"]:
+                rr_cmp = google_routes_traffic(
+                    cmp_origin,
+                    cmp_destination,
+                    dep_guess,
+                    google_key,
+                    route_pref=pk,
+                    include_tolls=True,
+                )
+                if rr_cmp:
+                    results_by_pref[pk] = rr_cmp
+
+            # Contrôle de cohérence :
+            # si une autre variante testée fait moins de km que SHORTER_DISTANCE,
+            # le tableau "Plus court" affiche réellement la moins kilométrée
+            # parmi toutes les variantes obtenues, au lieu d'afficher un résultat paradoxal.
+            available = list(results_by_pref.items())
+            shortest_note = ""
+            if available:
+                min_key, min_route = min(
+                    available,
+                    key=lambda item: float(item[1].get("km", 10**15) or 10**15)
+                )
+                google_short = results_by_pref.get("shortest")
+                if google_short is None or float(min_route.get("km", 10**15)) < float(google_short.get("km", 10**15)) - 0.1:
+                    results_by_pref["shortest"] = dict(min_route)
+                    shortest_note = f"Meilleur kilométrage trouvé ({ROUTE_PREF_LABELS.get(min_key, min_key)})"
+
+            rows = []
+            for pk in ["recommended", "no_tolls", "shortest", "no_highways"]:
+                rr_cmp = results_by_pref.get(pk)
+                if not rr_cmp:
+                    continue
+                note = shortest_note if pk == "shortest" and shortest_note else ""
+                rows.append({
+                    "Itinéraire": ROUTE_PREF_LABELS[pk],
+                    "Temps": fmt_duration(rr_cmp.get("min")),
+                    "Distance": f"{float(rr_cmp.get('km',0)):.0f} km",
+                    "Péage": euro(rr_cmp.get("toll_amount",0)) if float(rr_cmp.get("toll_amount",0) or 0) > 0 else "0 €",
+                    "": note,
+                })
+
+            if rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                if shortest_note:
+                    st.info("ℹ️ Google SHORTER_DISTANCE est expérimental. Routage PRO a corrigé l'affichage pour que « Plus court » soit réellement la variante la moins kilométrée parmi celles calculées.")
+            else:
+                st.info("Comparaison indisponible pour ce trajet.")
+        else:
+            st.info("Comparaison disponible pour les trajets futurs avec Google Routes.")
 
 st.subheader("📍 Rendez-vous de la journée")
 for _, rr in route_df.iterrows():
@@ -2546,4 +2676,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("Routage PRO V27.1 — 28/07/2026 · carte terrain · péages · itinéraires · étapes · Google Routes")
+st.caption("Routage PRO V27.2 — 28/07/2026 · GPS iPhone · carte terrain · péages · itinéraires · Google Routes")
