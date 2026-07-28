@@ -1,3 +1,7 @@
+# Routage PRO V24.1 — 28/07/2026
+
+Version web/iPhone basée sur la V24 installée. Carte générale en tête, résumé de journée, temps OSRM non gonflés, trafic Google à l’heure du trajet si clé API configurée, analyse IA plus lisible, ouverture PDF dans un nouvel onglet.
+
 # Routage PRO V24 — Import CRM assisté expérimental
 
 Base : V23 stable.
