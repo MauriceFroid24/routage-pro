@@ -10,6 +10,7 @@ from urllib.parse import quote_plus
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 from PIL import Image as PILImage
 from geopy.geocoders import Nominatim
@@ -30,7 +31,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V27.2 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.0 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -115,7 +116,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO — V27.2 — 28/07/2026")
+st.title("🚗 Routage PRO — V28.0 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -259,7 +260,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V27.2 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.0 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -291,6 +292,62 @@ textarea:disabled {
 .route-card .muted { color:#cbd5e1; }
 .route-card .go { color:#86efac; font-weight:850; }
 .map-legend { font-size:.82rem; color:#cbd5e1; margin:-2px 0 8px 0; }
+
+
+/* V28 — Cockpit premium inspiré des apps de conduite modernes */
+.stApp {
+    background:
+      radial-gradient(circle at 20% -10%, rgba(0,194,255,.12), transparent 28%),
+      radial-gradient(circle at 95% 8%, rgba(44,95,255,.12), transparent 26%),
+      #050810 !important;
+}
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg,#07101c 0%,#090d16 100%) !important;
+    border-right:1px solid #172235 !important;
+}
+.block-container { max-width: 1500px; }
+h1,h2,h3 { letter-spacing:-.02em; }
+div[data-testid="stExpander"]{
+    background:rgba(10,17,29,.72)!important;
+    border:1px solid #1e2b40!important;
+    border-radius:18px!important;
+}
+.stButton button,.stDownloadButton button,.stLinkButton a{
+    min-height:46px!important;
+    background:linear-gradient(180deg,#132238,#0c1727)!important;
+    border:1px solid #29405f!important;
+    box-shadow:0 6px 18px rgba(0,0,0,.22)!important;
+}
+.stButton button:hover,.stLinkButton a:hover{
+    border-color:#00c2ff!important;
+    box-shadow:0 0 0 1px rgba(0,194,255,.25),0 8px 24px rgba(0,194,255,.14)!important;
+}
+.cockpit-head{
+    display:flex;justify-content:space-between;gap:12px;align-items:center;
+    background:linear-gradient(135deg,rgba(8,17,31,.94),rgba(8,22,40,.82));
+    border:1px solid #1d3552;border-radius:22px;padding:14px 16px;margin:8px 0 12px;
+    box-shadow:0 18px 45px rgba(0,0,0,.28);
+}
+.cockpit-date{font-size:1.12rem;font-weight:950;color:#fff}
+.cockpit-stats{font-size:.9rem;font-weight:750;color:#a9bdd8;margin-top:4px}
+.live-pills{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.live-pill{font-size:.72rem;font-weight:900;padding:7px 9px;border-radius:999px;background:#0b1b2d;border:1px solid #21425f;color:#b9edff}
+.live-pill.ok{background:#072319;border-color:#116b4a;color:#70f3bc}
+.live-pill.alert{background:#2c1016;border-color:#7e2333;color:#ff9aaa}
+.next-card{
+    background:linear-gradient(145deg,#07101d 0%,#0a1d36 60%,#08294b 100%)!important;
+    border:1px solid #1f9ee8!important;
+    box-shadow:0 18px 45px rgba(0,140,255,.17)!important;
+}
+.next-card .depart{
+    background:#07281e!important;border:1px solid #1ac683!important;color:#9bffd5!important;
+}
+.route-card{background:rgba(10,16,27,.72)!important;border:1px solid #1d2b41!important}
+.day-summary{display:none!important}
+@media(max-width:768px){
+    .cockpit-head{display:block}
+    .live-pills{justify-content:flex-start;margin-top:10px}
+}
 
 </style>
 """, unsafe_allow_html=True)
@@ -1195,6 +1252,336 @@ def enrich_route(df, start_address, safety_min, visit_min, use_google, api_key, 
     return route_df, return_row, geo.get(start_address, {})
 
 
+
+RADARS_CSV_URL = "https://www.data.gouv.fr/api/1/datasets/r/17f7cfd9-a5fe-4b6a-9f5d-3625feaa396e"
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def load_fixed_radars():
+    """Charge le jeu public des radars fixes et normalise lat/lon/type/VMA."""
+    try:
+        r = requests.get(RADARS_CSV_URL, timeout=20)
+        r.raise_for_status()
+        raw = pd.read_csv(io.BytesIO(r.content), sep=None, engine="python")
+        if raw.empty:
+            return pd.DataFrame(columns=["lat","lon","type","vma","id"])
+
+        norm = {_norm_col_name(c): c for c in raw.columns}
+
+        def find_col(candidates):
+            for cand in candidates:
+                nc = _norm_col_name(cand)
+                if nc in norm:
+                    return norm[nc]
+            for nc, real in norm.items():
+                for cand in candidates:
+                    cc = _norm_col_name(cand)
+                    if cc and (cc in nc or nc in cc):
+                        return real
+            return None
+
+        lat_col = find_col(["latitude","lat"])
+        lon_col = find_col(["longitude","lon","lng"])
+        type_col = find_col(["type","type radar","type_de_radar"])
+        vma_col = find_col(["vma","vitesse","vitesse maximale autorisee"])
+        id_col = find_col(["id","identifiant","id radar"])
+
+        # Certains exports peuvent avoir une seule colonne de coordonnées.
+        if lat_col is None or lon_col is None:
+            coord_col = find_col(["coordonnees","coordonnées","geopoint","geo_point_2d","position"])
+            if coord_col:
+                extracted = raw[coord_col].astype(str).str.extract(
+                    r"(-?\d+(?:[.,]\d+)?)\s*[,; ]+\s*(-?\d+(?:[.,]\d+)?)"
+                )
+                raw["__lat"] = pd.to_numeric(extracted[0].str.replace(",", ".", regex=False), errors="coerce")
+                raw["__lon"] = pd.to_numeric(extracted[1].str.replace(",", ".", regex=False), errors="coerce")
+                lat_col, lon_col = "__lat", "__lon"
+
+        if lat_col is None or lon_col is None:
+            return pd.DataFrame(columns=["lat","lon","type","vma","id"])
+
+        out = pd.DataFrame({
+            "lat": pd.to_numeric(raw[lat_col].astype(str).str.replace(",", ".", regex=False), errors="coerce"),
+            "lon": pd.to_numeric(raw[lon_col].astype(str).str.replace(",", ".", regex=False), errors="coerce"),
+            "type": raw[type_col].astype(str) if type_col else "",
+            "vma": raw[vma_col].astype(str) if vma_col else "",
+            "id": raw[id_col].astype(str) if id_col else "",
+        }).dropna(subset=["lat","lon"])
+
+        # Garde-fou France métropolitaine + Corse.
+        out = out[
+            out["lat"].between(41.0, 51.8)
+            & out["lon"].between(-5.5, 10.2)
+        ].copy()
+        return out.reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["lat","lon","type","vma","id"])
+
+
+def radars_near_route(df, return_row=None, current_position=None, margin_deg=0.16):
+    """Filtre les radars autour de l'emprise de la tournée pour garder la carte fluide."""
+    pts = []
+    for _, rr in df.iterrows():
+        if pd.notna(rr.get("lat")) and pd.notna(rr.get("lon")):
+            pts.append((float(rr.get("lat")), float(rr.get("lon"))))
+        geom = rr.get("route_geometry", [])
+        if isinstance(geom, list) and geom:
+            # Échantillonnage léger.
+            step = max(1, len(geom)//20)
+            pts.extend([(float(p[0]), float(p[1])) for p in geom[::step] if isinstance(p, (list,tuple)) and len(p)>=2])
+    if return_row:
+        geom = return_row.get("route_geometry", [])
+        if isinstance(geom, list) and geom:
+            step = max(1, len(geom)//20)
+            pts.extend([(float(p[0]), float(p[1])) for p in geom[::step] if isinstance(p, (list,tuple)) and len(p)>=2])
+    if isinstance(current_position, dict):
+        try:
+            pts.append((float(current_position["latitude"]), float(current_position["longitude"])))
+        except Exception:
+            pass
+    if not pts:
+        return pd.DataFrame(columns=["lat","lon","type","vma","id"])
+
+    all_radars = load_fixed_radars()
+    if all_radars.empty:
+        return all_radars
+
+    lats = [p[0] for p in pts]
+    lons = [p[1] for p in pts]
+    min_lat, max_lat = min(lats)-margin_deg, max(lats)+margin_deg
+    min_lon, max_lon = min(lons)-margin_deg, max(lons)+margin_deg
+    subset = all_radars[
+        all_radars["lat"].between(min_lat, max_lat)
+        & all_radars["lon"].between(min_lon, max_lon)
+    ].copy()
+
+    # Évite une surcharge extrême dans les grandes agglomérations.
+    return subset.head(250).reset_index(drop=True)
+
+
+def _html_escape(s):
+    return (str(s or "")
+            .replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+            .replace('"',"&quot;").replace("'","&#39;"))
+
+
+def build_maplibre_html(df, return_row, start_address, start_geo, current_position=None,
+                        show_radars=True, style_name="Liberty"):
+    """Carte vectorielle moderne OpenFreeMap/MapLibre."""
+    import json
+
+    style_key = {
+        "Liberty": "liberty",
+        "Bright": "bright",
+        "Positron": "positron",
+        "Dark": "dark",
+        "Fiord": "fiord",
+    }.get(style_name, "liberty")
+    style_url = f"https://tiles.openfreemap.org/styles/{style_key}"
+
+    route_features = []
+    route_labels = []
+    stop_features = []
+    bounds_pts = []
+
+    # Base
+    if start_geo.get("lat") and start_geo.get("lon"):
+        base_lon = float(start_geo["lon"]); base_lat = float(start_geo["lat"])
+        bounds_pts.append([base_lon, base_lat])
+        stop_features.append({
+            "type":"Feature",
+            "properties":{"kind":"base","title":"Base","subtitle":start_address,"order":"⌂"},
+            "geometry":{"type":"Point","coordinates":[base_lon,base_lat]},
+        })
+
+    for _, rr in df.iterrows():
+        try:
+            lat = float(rr.get("lat")); lon = float(rr.get("lon"))
+        except Exception:
+            continue
+        bounds_pts.append([lon,lat])
+        stop_features.append({
+            "type":"Feature",
+            "properties":{
+                "kind":"stop",
+                "order":str(rr.get("numero_rdv","")),
+                "time":fmt_time(rr.get("heure_rdv")),
+                "client":str(rr.get("nom_prospect","")),
+                "address":str(rr.get("adresse_complete","")),
+                "waze":str(rr.get("waze","#")),
+                "house":str(rr.get("street_view","#")),
+                "phone":str(rr.get("telephone_tel","")),
+                "distance":str(rr.get("distance_depuis_precedent_km","")),
+                "duration":fmt_duration(rr.get("temps_route_depuis_precedent_min","")),
+                "depart":fmt_dt(rr.get("depart_conseille")),
+                "toll":euro(rr.get("peage_estime",0)) if float(rr.get("peage_estime",0) or 0)>0 else "",
+            },
+            "geometry":{"type":"Point","coordinates":[lon,lat]},
+        })
+
+        geom = rr.get("route_geometry", [])
+        if isinstance(geom, list) and len(geom)>=2:
+            coords = [[float(p[1]),float(p[0])] for p in geom if isinstance(p,(list,tuple)) and len(p)>=2]
+            if len(coords)>=2:
+                route_features.append({
+                    "type":"Feature",
+                    "properties":{"return":False},
+                    "geometry":{"type":"LineString","coordinates":coords},
+                })
+                mid = coords[len(coords)//2]
+                toll = euro(rr.get("peage_estime",0)) if float(rr.get("peage_estime",0) or 0)>0 else ""
+                label = f"{fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km"
+                if toll: label += f" · {toll}"
+                route_labels.append({
+                    "coords":mid,
+                    "line1":label,
+                    "line2":f"Départ {fmt_dt(rr.get('depart_conseille'))}",
+                })
+
+    if return_row:
+        geom = return_row.get("route_geometry", [])
+        if isinstance(geom, list) and len(geom)>=2:
+            coords = [[float(p[1]),float(p[0])] for p in geom if isinstance(p,(list,tuple)) and len(p)>=2]
+            if len(coords)>=2:
+                route_features.append({
+                    "type":"Feature","properties":{"return":True},
+                    "geometry":{"type":"LineString","coordinates":coords},
+                })
+                mid=coords[len(coords)//2]
+                toll=euro(return_row.get("peage_estime",0)) if float(return_row.get("peage_estime",0) or 0)>0 else ""
+                label=f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km"
+                if toll: label+=f" · {toll}"
+                route_labels.append({"coords":mid,"line1":label,"line2":"Retour base"})
+
+    gps = None
+    if isinstance(current_position, dict):
+        try:
+            gps={"lat":float(current_position["latitude"]),"lon":float(current_position["longitude"])}
+            bounds_pts.append([gps["lon"],gps["lat"]])
+        except Exception:
+            gps=None
+
+    radar_features=[]
+    if show_radars:
+        rads=radars_near_route(df, return_row, current_position)
+        for _, rd in rads.iterrows():
+            radar_features.append({
+                "type":"Feature",
+                "properties":{
+                    "type":str(rd.get("type","")),
+                    "vma":str(rd.get("vma","")),
+                    "id":str(rd.get("id","")),
+                },
+                "geometry":{"type":"Point","coordinates":[float(rd["lon"]),float(rd["lat"])]},
+            })
+
+    data = {
+        "routes":{"type":"FeatureCollection","features":route_features},
+        "stops":{"type":"FeatureCollection","features":stop_features},
+        "radars":{"type":"FeatureCollection","features":radar_features},
+        "labels":route_labels,
+        "gps":gps,
+        "bounds":bounds_pts,
+        "style":style_url,
+    }
+    payload=json.dumps(data, ensure_ascii=False).replace("</","<\\/")
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet"/>
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<style>
+html,body,#map{{margin:0;width:100%;height:100%;background:#070b14;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+#map{{border-radius:22px;overflow:hidden}}
+.maplibregl-ctrl-group{{border-radius:14px!important;overflow:hidden}}
+.maplibregl-popup-content{{background:#0b1220!important;color:#fff!important;border:1px solid #263248;border-radius:18px!important;padding:14px!important;box-shadow:0 16px 40px rgba(0,0,0,.45)!important}}
+.maplibregl-popup-tip{{border-top-color:#0b1220!important;border-bottom-color:#0b1220!important}}
+.stop-marker{{min-width:86px;background:#08111f;color:#fff;border:2px solid #00c2ff;border-radius:13px;padding:7px 9px;box-shadow:0 5px 18px rgba(0,194,255,.28);font-weight:900;text-align:center;line-height:1.1}}
+.stop-marker .t{{font-size:13px;color:#76e4ff}} .stop-marker .n{{font-size:12px;margin-top:4px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.base-marker{{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0b1220;border:3px solid #62f6b7;color:#fff;font-size:20px;box-shadow:0 4px 18px rgba(98,246,183,.35)}}
+.route-pill{{background:rgba(7,11,20,.94);color:#fff;border:1px solid #5e718e;border-radius:12px;padding:6px 9px;box-shadow:0 5px 18px rgba(0,0,0,.35);font-weight:850;font-size:12px;line-height:1.25;white-space:nowrap}}
+.route-pill .sub{{color:#80e8ff;font-weight:900}}
+.radar-marker{{width:34px;height:34px;border-radius:50%;background:#ff293d;border:3px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:950;box-shadow:0 4px 15px rgba(255,41,61,.45)}}
+.gps-dot{{width:22px;height:22px;border-radius:50%;background:#178bff;border:4px solid #fff;box-shadow:0 0 0 10px rgba(23,139,255,.22),0 0 25px rgba(23,139,255,.55)}}
+.popup-title{{font-size:18px;font-weight:950;margin-bottom:4px}} .popup-client{{font-size:15px;font-weight:850;color:#7ee7ff;margin-bottom:6px}}
+.popup-addr{{font-size:12px;color:#cbd5e1;margin-bottom:10px}}
+.popup-route{{font-size:12px;color:#dbeafe;margin:8px 0}}
+.pbtn{{display:inline-block;text-decoration:none;color:#fff!important;background:#142033;border:1px solid #31425f;border-radius:10px;padding:8px 10px;margin:3px 2px;font-weight:850;font-size:12px}}
+.pbtn.primary{{background:#087de8;border-color:#21bfff}} .pbtn.house{{background:#5b2fc6;border-color:#8b5cf6}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+const DATA={payload};
+const map=new maplibregl.Map({{
+  container:"map", style:DATA.style, center:[2.35,48.85], zoom:7,
+  attributionControl:true
+}});
+map.addControl(new maplibregl.NavigationControl({{showCompass:true}}),"top-right");
+
+function esc(v){{return String(v??"").replace(/[&<>"']/g,m=>({{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}}[m]));}}
+map.on("load",()=>{{
+  map.addSource("routes",{{type:"geojson",data:DATA.routes}});
+  map.addLayer({{id:"route-halo",type:"line",source:"routes",paint:{{"line-color":"#06101d","line-width":10,"line-opacity":.78}},layout:{{"line-cap":"round","line-join":"round"}}}});
+  map.addLayer({{id:"routes",type:"line",source:"routes",paint:{{"line-color":["case",["get","return"],"#7d8da7","#00bfff"],"line-width":["case",["get","return"],5,6],"line-opacity":.98,"line-dasharray":["case",["get","return"],["literal",[2,1]],["literal",[1,0]]]}},layout:{{"line-cap":"round","line-join":"round"}}}});
+
+  // Labels trajet
+  DATA.labels.forEach(l=>{{
+    const el=document.createElement("div"); el.className="route-pill";
+    el.innerHTML=esc(l.line1)+`<br><span class="sub">${{esc(l.line2)}}</span>`;
+    new maplibregl.Marker({{element:el,anchor:"center"}}).setLngLat(l.coords).addTo(map);
+  }});
+
+  // Stops
+  DATA.stops.features.forEach(f=>{{
+    const p=f.properties, c=f.geometry.coordinates;
+    const el=document.createElement("div");
+    if(p.kind==="base"){{ el.className="base-marker"; el.innerHTML="⌂"; }}
+    else{{ el.className="stop-marker"; el.innerHTML=`<div class="t">#${{esc(p.order)}} · ${{esc(p.time)}}</div><div class="n">${{esc(p.client)}}</div>`; }}
+    const marker=new maplibregl.Marker({{element:el,anchor:"bottom"}}).setLngLat(c).addTo(map);
+    if(p.kind==="stop"){{
+      const phone=p.phone?`<a class="pbtn" href="tel:${{esc(p.phone)}}">📞 Appeler</a>`:"";
+      const toll=p.toll?` · 🛣️ ${{esc(p.toll)}}`:"";
+      const html=`<div class="popup-title">#${{esc(p.order)}} · ${{esc(p.time)}}</div>
+      <div class="popup-client">${{esc(p.client)}}</div><div class="popup-addr">${{esc(p.address)}}</div>
+      <div class="popup-route">🚗 ${{esc(p.duration)}} · ${{esc(p.distance)}} km${{toll}}<br>⏰ Départ ${{esc(p.depart)}}</div>
+      <a class="pbtn primary" target="_blank" href="${{esc(p.waze)}}">🚗 Waze</a>
+      <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>${{phone}}`;
+      marker.setPopup(new maplibregl.Popup({{offset:28,maxWidth:"320px"}}).setHTML(html));
+    }} else {{
+      marker.setPopup(new maplibregl.Popup({{offset:22}}).setHTML(`<b>⌂ Base</b><br>${{esc(p.subtitle)}}`));
+    }}
+  }});
+
+  // GPS
+  if(DATA.gps){{
+    const el=document.createElement("div"); el.className="gps-dot";
+    new maplibregl.Marker({{element:el}}).setLngLat([DATA.gps.lon,DATA.gps.lat]).setPopup(new maplibregl.Popup().setHTML("<b>📍 Ma position</b>")).addTo(map);
+  }}
+
+  // Radars fixes publics
+  DATA.radars.features.forEach(f=>{{
+    const p=f.properties,c=f.geometry.coordinates,el=document.createElement("div");
+    el.className="radar-marker"; el.innerHTML="📷";
+    let details=`<div class="popup-title">📷 Radar fixe</div>`;
+    if(p.type) details+=`<div class="popup-client">${{esc(p.type)}}</div>`;
+    if(p.vma && p.vma!=="nan") details+=`<div class="popup-route">Limitation : <b>${{esc(p.vma)}} km/h</b></div>`;
+    new maplibregl.Marker({{element:el,anchor:"center"}}).setLngLat(c).setPopup(new maplibregl.Popup({{offset:20}}).setHTML(details)).addTo(map);
+  }});
+
+  if(DATA.bounds && DATA.bounds.length){{
+    const b=new maplibregl.LngLatBounds();
+    DATA.bounds.forEach(p=>b.extend(p));
+    map.fitBounds(b,{{padding:70,maxZoom:12,duration:0}});
+  }}
+}});
+</script>
+</body></html>"""
+
+
 def make_map(df, return_row, start_address, start_geo, interactive=True, current_position=None):
     map_df = df.copy()
     if return_row:
@@ -1989,16 +2376,17 @@ with st.sidebar:
     )
     if google_routes_ready:
         st.caption("🟢 Trafic Google actif")
-        if st.button("🧪 Tester Google Routes", use_container_width=True):
-            with st.spinner("Test de Google Routes en cours…"):
-                diagnostic = google_routes_diagnostic(google_key)
-            if diagnostic.get("ok"):
-                st.success(f"✅ Test Google Routes : {diagnostic.get('message')}")
-            else:
-                status = diagnostic.get("status")
-                prefix = f"Erreur HTTP {status}" if status else "Erreur"
-                st.error(f"🔴 {prefix} : {diagnostic.get('message')}")
-                st.caption("La clé API n'est jamais affichée par ce diagnostic.")
+        with st.expander("🛠️ Diagnostic", expanded=False):
+            if st.button("🧪 Tester Google Routes", use_container_width=True):
+                with st.spinner("Test de Google Routes en cours…"):
+                    diagnostic = google_routes_diagnostic(google_key)
+                if diagnostic.get("ok"):
+                    st.success(f"✅ Test Google Routes : {diagnostic.get('message')}")
+                else:
+                    status = diagnostic.get("status")
+                    prefix = f"Erreur HTTP {status}" if status else "Erreur"
+                    st.error(f"🔴 {prefix} : {diagnostic.get('message')}")
+                    st.caption("La clé API n'est jamais affichée par ce diagnostic.")
     else:
         st.warning("🟠 Google Routes API non configurée : temps sans trafic réel")
     st.divider()
@@ -2042,7 +2430,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V27.2 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.0 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2151,7 +2539,20 @@ summary_bits.append(f"{euro(current_ik_total)} IK")
 if fmt_dt(first_dep): summary_bits.append(f"départ {fmt_dt(first_dep)}")
 if fmt_dt(retour_estime): summary_bits.append(f"retour ~{fmt_dt(retour_estime)}")
 
-st.markdown(f"""<div class="day-summary"><div class="day-summary-title">{summary_title}</div><div class="day-summary-line">{" · ".join(summary_bits)}</div></div>""", unsafe_allow_html=True)
+st.markdown(
+    f"""<div class="cockpit-head">
+      <div>
+        <div class="cockpit-date">{summary_title}</div>
+        <div class="cockpit-stats">{" · ".join(summary_bits)}</div>
+      </div>
+      <div class="live-pills">
+        <span class="live-pill ok">● TRAFIC GOOGLE</span>
+        <span class="live-pill">GPS</span>
+        <span class="live-pill alert">📷 RADARS</span>
+      </div>
+    </div>""",
+    unsafe_allow_html=True
+)
 
 st.subheader("🗺️ Ma tournée")
 
@@ -2176,19 +2577,40 @@ with st.expander("📍 Ma position sur la carte", expanded=False):
     else:
         st.warning("Le module GPS n'est pas installé. Ajoute `streamlit-geolocation` dans requirements.txt.")
 
-st.markdown('<div class="map-legend">Durée · distance · heure de départ conseillée directement sur les trajets. Touchez un RDV pour Waze, Voir maison ou Appeler.</div>', unsafe_allow_html=True)
-map_interactive_top = st.toggle("Déverrouiller la carte", value=False, key="map_interactive_top", help="Laisse désactivé sur iPhone pour faire défiler la page normalement.")
-if not map_interactive_top:
-    st.markdown("""<style>iframe[title="streamlit_folium.st_folium"]{pointer-events:none!important;}</style>""", unsafe_allow_html=True)
+st.markdown('<div class="map-legend">Carte vectorielle routière · clients · temps · départs · péages · position GPS · radars fixes publics.</div>', unsafe_allow_html=True)
+
+mc1, mc2 = st.columns(2)
+with mc1:
+    map_style = st.selectbox(
+        "Style de carte",
+        ["Liberty","Bright","Positron","Dark","Fiord"],
+        index=0,
+        key="map_style_v28",
+        help="Liberty est le style par défaut, lisible et routier."
+    )
+with mc2:
+    show_radars = st.toggle(
+        "📷 Radars fixes",
+        value=True,
+        key="show_radars_v28",
+        help="Affiche uniquement les radars fixes issus du jeu public du ministère de l’Intérieur."
+    )
+
 try:
-    st_folium(make_map(route_df, return_row, start_address, start_geo, interactive=map_interactive_top, current_position=current_position), height=560, use_container_width=True, key="main_map_v27")
+    map_html = build_maplibre_html(
+        route_df, return_row, start_address, start_geo,
+        current_position=current_position,
+        show_radars=show_radars,
+        style_name=map_style,
+    )
+    components.html(map_html, height=650, scrolling=False)
 except Exception as e:
-    st.warning(f"Carte non disponible : {e}")
+    st.warning(f"Carte moderne indisponible : {e}")
 
 next_rdv = find_next_rdv(route_df)
 if next_rdv is not None:
-    st.subheader("🎯 Prochain rendez-vous")
-    st.markdown(f"""<div class="next-card"><div class="eyebrow">PROCHAIN RDV</div><div class="time">{fmt_time(next_rdv.get('heure_rdv'))}</div><div class="client">{next_rdv.get('nom_prospect','')}</div><div class="address">{next_rdv.get('adresse_complete','')}</div><div class="route">🚗 {fmt_duration(next_rdv.get('temps_route_depuis_precedent_min',''))} · {next_rdv.get('distance_depuis_precedent_km','')} km{(' · 🛣️ ' + euro(next_rdv.get('peage_estime',0))) if float(next_rdv.get('peage_estime',0) or 0)>0 else ''}</div><div class="depart">⏰ Départ conseillé : {fmt_dt(next_rdv.get('depart_conseille'))}</div></div>""", unsafe_allow_html=True)
+    st.subheader("🎯 Prochain arrêt")
+    st.markdown(f"""<div class="next-card"><div class="eyebrow">PROCHAIN ARRÊT</div><div class="time">{fmt_time(next_rdv.get('heure_rdv'))}</div><div class="client">{next_rdv.get('nom_prospect','')}</div><div class="address">{next_rdv.get('adresse_complete','')}</div><div class="route">🚗 {fmt_duration(next_rdv.get('temps_route_depuis_precedent_min',''))} · {next_rdv.get('distance_depuis_precedent_km','')} km{(' · 🛣️ ' + euro(next_rdv.get('peage_estime',0))) if float(next_rdv.get('peage_estime',0) or 0)>0 else ''}</div><div class="depart">⏰ Départ conseillé : {fmt_dt(next_rdv.get('depart_conseille'))}</div></div>""", unsafe_allow_html=True)
     a1, a2 = st.columns(2)
     a1.link_button("🚗 WAZE", next_rdv.get("waze","#"), use_container_width=True)
     a2.link_button("🏠 VOIR MAISON", next_rdv.get("street_view","#"), use_container_width=True)
@@ -2268,7 +2690,7 @@ if next_rdv is not None:
         else:
             st.info("Comparaison disponible pour les trajets futurs avec Google Routes.")
 
-st.subheader("📍 Rendez-vous de la journée")
+st.subheader("🧭 Suite de la tournée")
 for _, rr in route_df.iterrows():
     is_next = next_rdv is not None and str(rr.get("numero_rdv")) == str(next_rdv.get("numero_rdv"))
     badge = " · PROCHAIN" if is_next else ""
@@ -2676,4 +3098,4 @@ with d2:
     st.download_button("📊 Télécharger le registre IK mensuel CSV", data=df_to_csv_bytes(ik_register), file_name="registre_indemnites_kilometriques_mensuel.csv", mime="text/csv", use_container_width=True)
 
 
-st.caption("Routage PRO V27.2 — 28/07/2026 · GPS iPhone · carte terrain · péages · itinéraires · Google Routes")
+st.caption("Routage PRO V28.0 — 28/07/2026 · Cockpit terrain · carte vectorielle · GPS · radars fixes · trafic Google")
