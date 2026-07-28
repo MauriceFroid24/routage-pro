@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.5.3.1 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.5.4.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.5.3 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.5.4 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.5.3 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.5.4 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -690,22 +690,40 @@ def french_long_date(d):
     return f"{FR_WEEKDAYS[d.weekday()]} {d.day} {FR_MONTHS[d.month-1]}"
 
 
-def route_delay_status(row, row_index=0):
-    """Retard probable en minutes vers ce RDV."""
+def route_timing_status(row, row_index=0):
+    """Retourne (statut, minutes) pour l'étiquette trajet.
+
+    - RDV 2+ : utilise la marge disponible après le RDV précédent,
+      donc tient compte de la durée moyenne du RDV + temps de route + marge sécurité.
+    - Premier RDV : compare l'heure actuelle au départ conseillé.
+    """
     try:
-        pause = row.get("pause_avant_rdv_min", "")
-        if row_index > 0 and pause not in ("", None):
-            return max(0, -int(to_minutes(pause)))
+        if row_index > 0:
+            pause = row.get("pause_avant_rdv_min", "")
+            if pause not in ("", None):
+                p = int(to_minutes(pause))
+                if p < 0:
+                    return "retard", abs(p)
+                return "avance", p
 
         advised = row.get("depart_conseille")
         rdv_dt = row.get("rdv_datetime")
         if isinstance(advised, datetime) and isinstance(rdv_dt, datetime):
             now = datetime.now(ZoneInfo("Europe/Paris")).replace(tzinfo=None)
-            if now <= rdv_dt:
-                return max(0, int((now - advised).total_seconds() // 60))
+
+            # Pour une journée future, on affiche simplement la marge prévue comme "à l'heure".
+            if now.date() < rdv_dt.date():
+                return "ok", 0
+
+            diff = int((advised - now).total_seconds() // 60)
+            if diff < 0:
+                return "retard", abs(diff)
+            return "avance", diff
+
     except Exception:
         pass
-    return 0
+
+    return "ok", 0
 
 
 def find_next_rdv(df):
@@ -1716,14 +1734,17 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 ik_txt = euro(rr.get("ik_montant_trajet", 0))
                 label = f"{fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km · IK {ik_txt}"
                 
-                delay_min = int(route_delay_status(rr, int(rr.name) if isinstance(rr.name, int) else 0))
+                timing_status, timing_min = route_timing_status(
+                    rr,
+                    int(rr.name) if isinstance(rr.name, int) else 0
+                )
                 if mid is not None:
                     route_labels.append({
                         "coords":mid,
-                    "line1":label,
-                    "line2":f"Départ {fmt_dt(rr.get('depart_conseille'))}",
-                        "delay_min":delay_min,
-                        "alert":bool(delay_min > 0),
+                        "line1":label,
+                        "line2":f"Départ {fmt_dt(rr.get('depart_conseille'))}",
+                        "timing_status":timing_status,
+                        "timing_min":int(timing_min),
                     })
 
     if return_row:
@@ -1739,7 +1760,7 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 ik_ret = euro(return_row.get("ik_montant_trajet", 0))
                 label = f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km · IK {ik_ret}"
                 
-                route_labels.append({"coords":mid,"line1":label,"line2":"Retour base","delay_min":0,"alert":False})
+                route_labels.append({"coords":mid,"line1":label,"line2":"Retour base","timing_status":"ok","timing_min":0})
 
     gps = None
     if isinstance(current_position, dict):
@@ -1821,21 +1842,21 @@ html,body,#map{{margin:0;width:100%;height:100%;background:#070b14;font-family:-
 .base-marker{{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0b1220;border:3px solid #62f6b7;color:#fff;font-size:20px;box-shadow:0 4px 18px rgba(98,246,183,.35)}}
 .route-pill{{background:rgba(92,99,109,.97);color:#fff;border:1px solid #a7adb6;border-radius:12px;padding:7px 10px;box-shadow:0 5px 18px rgba(0,0,0,.24);font-weight:850;font-size:12px;line-height:1.3;white-space:nowrap}}
 .route-pill .sub{{color:#80e8ff;font-weight:900}}
-.route-pill.delay-alert{{
-  background:rgba(210,34,51,.97)!important;
-  border:2px solid #fff!important;
-  box-shadow:0 0 0 0 rgba(255,49,70,.65),0 6px 22px rgba(255,0,34,.38)!important;
-  animation:delayPulse 1.05s infinite alternate;
+.route-pill.late{{
+  background:rgba(198,40,56,.98)!important;
+  border:2px solid #ffb4bd!important;
+  color:#fff!important;
+  box-shadow:0 6px 20px rgba(198,40,56,.35)!important;
 }}
-.route-pill .delay-line{{
-  color:#fff;
-  font-weight:950;
+.route-pill .timing-line{{
+  margin-top:4px;
   font-size:12px;
-  margin-top:3px;
+  font-weight:950;
 }}
-@keyframes delayPulse{{
-  0%{{transform:scale(1);box-shadow:0 0 0 0 rgba(255,49,70,.55),0 6px 22px rgba(255,0,34,.30)}}
-  100%{{transform:scale(1.035);box-shadow:0 0 0 8px rgba(255,49,70,0),0 8px 28px rgba(255,0,34,.52)}}
+.route-pill .timing-ok{{color:#b7f7d0}}
+.route-pill.late .timing-line{{color:#fff}}
+
+100%{{transform:scale(1.035);box-shadow:0 0 0 8px rgba(255,49,70,0),0 8px 28px rgba(255,0,34,.52)}}
 }}
 
 .radar-marker{{width:34px;height:34px;border-radius:50%;background:#ff293d;border:3px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:950;box-shadow:0 4px 15px rgba(255,41,61,.45)}}
@@ -1869,9 +1890,23 @@ map.on("load",()=>{{
   // Labels trajet
   DATA.labels.forEach(l=>{{
     const el=document.createElement("div");
-    el.className="route-pill" + (l.alert ? " delay-alert" : "");
-    const alertLine=l.alert?`<div class="delay-line">⚠ RETARD PROBABLE · +${{esc(l.delay_min)}} min</div>`:"";
-    el.innerHTML=esc(l.line1)+`<br><span class="sub">${{esc(l.line2)}}</span>`+alertLine;
+    const late = l.timing_status === "retard";
+    el.className = "route-pill" + (late ? " late" : "");
+
+    let timingLine = "";
+    if(l.timing_status === "retard") {{
+      timingLine = `<div class="timing-line">🔴 Retard ${{esc(l.timing_min)}} min</div>`;
+    }} else if(l.timing_status === "avance") {{
+      timingLine = `<div class="timing-line timing-ok">🟢 Avance ${{esc(l.timing_min)}} min</div>`;
+    }} else {{
+      timingLine = `<div class="timing-line timing-ok">🟢 À l'heure</div>`;
+    }}
+
+    el.innerHTML =
+      esc(l.line1) +
+      `<br><span class="sub">${{esc(l.line2)}}</span>` +
+      timingLine;
+
     new maplibregl.Marker({{element:el,anchor:"center"}})
       .setLngLat(l.coords)
       .addTo(map);
@@ -2788,7 +2823,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.5.3 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.5.4 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2880,7 +2915,7 @@ total_tolls=float(pd.to_numeric(route_df.get("peage_estime",pd.Series(dtype=floa
 
 
 # ==========================================================
-# V28.5.3 — Mode terrain direct depuis la carte
+# V28.5.4 — Mode terrain direct depuis la carte
 # ==========================================================
 terrain_direct_no = str(st.query_params.get("terrain", "") or "")
 if terrain_direct_no:
@@ -3495,4 +3530,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.5.3 — 28/07/2026 · alerte retard ancrée sur le trajet · GPS · radars · stations-service · trafic Google")
+st.caption("Routage PRO · GDH — V28.5.4 — 28/07/2026 · avance/retard sur chaque trajet · fond rouge si retard · GPS · radars · stations-service · trafic Google")
