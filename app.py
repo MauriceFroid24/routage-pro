@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.5.5.1 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.4 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.5.5 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.4 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.5.5 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.4 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -688,43 +688,6 @@ def french_long_date(d):
     if not isinstance(d, date):
         return ""
     return f"{FR_WEEKDAYS[d.weekday()]} {d.day} {FR_MONTHS[d.month-1]}"
-
-
-def route_timing_status(row, row_index=0):
-    """Retourne (statut, minutes) pour l'étiquette trajet.
-
-    - RDV 2+ : utilise la marge disponible après le RDV précédent,
-      donc tient compte de la durée moyenne du RDV + temps de route + marge sécurité.
-    - Premier RDV : compare l'heure actuelle au départ conseillé.
-    """
-    try:
-        if row_index > 0:
-            pause = row.get("pause_avant_rdv_min", "")
-            if pause not in ("", None):
-                p = int(to_minutes(pause))
-                if p < 0:
-                    return "retard", abs(p)
-                return "avance", p
-
-        advised = row.get("depart_conseille")
-        rdv_dt = row.get("rdv_datetime")
-        if isinstance(advised, datetime) and isinstance(rdv_dt, datetime):
-            now = datetime.now(ZoneInfo("Europe/Paris")).replace(tzinfo=None)
-
-            # Pour une journée future, on affiche simplement la marge prévue comme "à l'heure".
-            if now.date() < rdv_dt.date():
-                return "ok", 0
-
-            diff = int((advised - now).total_seconds() // 60)
-            if diff < 0:
-                return "retard", abs(diff)
-            return "avance", diff
-
-    except Exception:
-        pass
-
-    return "ok", 0
-
 
 def find_next_rdv(df):
     if df is None or df.empty:
@@ -1614,56 +1577,6 @@ def _html_escape(s):
             .replace('"',"&quot;").replace("'","&#39;"))
 
 
-
-def route_visual_midpoint(coords):
-    """Milieu du trajet renvoyé au format MapLibre [longitude, latitude].
-
-    Les géométries Google de cette application sont stockées [latitude, longitude].
-    """
-    if not isinstance(coords, list) or len(coords) < 2:
-        if not coords:
-            return None
-        try:
-            return [float(coords[0][1]), float(coords[0][0])]
-        except Exception:
-            return None
-
-    import math as _math
-    segs = []
-    total = 0.0
-
-    for a, b in zip(coords[:-1], coords[1:]):
-        try:
-            lat1, lon1 = float(a[0]), float(a[1])
-            lat2, lon2 = float(b[0]), float(b[1])
-        except Exception:
-            continue
-
-        mean_lat = _math.radians((lat1 + lat2) / 2.0)
-        dx = (lon2 - lon1) * 111.0 * _math.cos(mean_lat)
-        dy = (lat2 - lat1) * 111.0
-        d = _math.hypot(dx, dy)
-        segs.append((lat1, lon1, lat2, lon2, d))
-        total += d
-
-    if total <= 0 or not segs:
-        p = coords[len(coords)//2]
-        return [float(p[1]), float(p[0])]
-
-    target = total / 2.0
-    acc = 0.0
-    for lat1, lon1, lat2, lon2, d in segs:
-        if acc + d >= target:
-            ratio = 0.0 if d <= 0 else (target - acc) / d
-            lat = lat1 + ratio * (lat2 - lat1)
-            lon = lon1 + ratio * (lon2 - lon1)
-            return [lon, lat]
-        acc += d
-
-    lat, lon = float(coords[-1][0]), float(coords[-1][1])
-    return [lon, lat]
-
-
 def build_maplibre_html(df, return_row, start_address, start_geo, current_position=None,
                         show_radars=True, show_fuel=False, fuel_type="gazole", style_name="Liberty",
                         app_url=""):
@@ -1711,12 +1624,17 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 "waze":str(rr.get("waze","#")),
                 "groute":google_drive_to_link(rr.get("adresse_complete","")),
                 "house":str(rr.get("street_view","#")),
+                "terrain":f"{str(app_url).rstrip('/')}?terrain={quote_plus(str(rr.get('numero_rdv','')))}#terrain-{quote_plus(str(rr.get('numero_rdv','')))}" if app_url else "",
                 "phone":str(rr.get("telephone_tel","")),
                 "distance":str(rr.get("distance_depuis_precedent_km","")),
                 "duration":fmt_duration(rr.get("temps_route_depuis_precedent_min","")),
                 "depart":fmt_dt(rr.get("depart_conseille")),
                 "ik":euro(rr.get("ik_montant_trajet",0)),
-                "toll":"",
+                "toll":(
+                    euro(rr.get("peage_estime",0))
+                    if bool(rr.get("peage_connu",False)) and float(rr.get("peage_estime",0) or 0) > 0
+                    else ("Tarif indisponible" if bool(rr.get("peage_detecte",False)) else "")
+                ),
             },
             "geometry":{"type":"Point","coordinates":[lon,lat]},
         })
@@ -1730,34 +1648,22 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                     "properties":{"return":False},
                     "geometry":{"type":"LineString","coordinates":coords},
                 })
-                mid = route_visual_midpoint(coords)
+                mid = coords[len(coords)//2]
                 ik_txt = euro(rr.get("ik_montant_trajet", 0))
+                if bool(rr.get("peage_connu", False)) and float(rr.get("peage_estime",0) or 0) > 0:
+                    toll_txt = euro(rr.get("peage_estime",0))
+                elif bool(rr.get("peage_detecte", False)):
+                    toll_txt = "péage : tarif N/D"
+                else:
+                    toll_txt = ""
                 label = f"{fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km · IK {ik_txt}"
-                
-                timing_status, timing_min = route_timing_status(
-                    rr,
-                    int(rr.name) if isinstance(rr.name, int) else 0
-                )
-
-                # L'étiquette doit toujours utiliser un point valide du trajet.
-                # Si le milieu calculé échoue, repli sur le point central de la géométrie.
-                label_mid = mid
-                if label_mid is None and isinstance(coords, list) and len(coords) > 0:
-                    p = coords[len(coords)//2]
-                    try:
-                        # Géométrie Google stockée [lat, lon] -> MapLibre [lon, lat]
-                        label_mid = [float(p[1]), float(p[0])]
-                    except Exception:
-                        label_mid = None
-
-                if label_mid is not None:
-                    route_labels.append({
-                        "coords":label_mid,
-                        "line1":label,
-                        "line2":f"Départ {fmt_dt(rr.get('depart_conseille'))}",
-                        "timing_status":timing_status,
-                        "timing_min":int(timing_min),
-                    })
+                if toll_txt:
+                    label += f" · {toll_txt}"
+                route_labels.append({
+                    "coords":mid,
+                    "line1":label,
+                    "line2":f"Départ {fmt_dt(rr.get('depart_conseille'))}",
+                })
 
     if return_row:
         geom = return_row.get("route_geometry", [])
@@ -1770,9 +1676,15 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 })
                 mid=coords[len(coords)//2]
                 ik_ret = euro(return_row.get("ik_montant_trajet", 0))
-                label = f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km · IK {ik_ret}"
-                
-                route_labels.append({"coords":mid,"line1":label,"line2":"Retour base","timing_status":"ok","timing_min":0})
+                if bool(return_row.get("peage_connu", False)) and float(return_row.get("peage_estime",0) or 0) > 0:
+                    toll = euro(return_row.get("peage_estime",0))
+                elif bool(return_row.get("peage_detecte", False)):
+                    toll = "péage : tarif N/D"
+                else:
+                    toll = ""
+                label=f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km · IK {ik_ret}"
+                if toll: label+=f" · {toll}"
+                route_labels.append({"coords":mid,"line1":label,"line2":"Retour base"})
 
     gps = None
     if isinstance(current_position, dict):
@@ -1854,23 +1766,6 @@ html,body,#map{{margin:0;width:100%;height:100%;background:#070b14;font-family:-
 .base-marker{{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0b1220;border:3px solid #62f6b7;color:#fff;font-size:20px;box-shadow:0 4px 18px rgba(98,246,183,.35)}}
 .route-pill{{background:rgba(92,99,109,.97);color:#fff;border:1px solid #a7adb6;border-radius:12px;padding:7px 10px;box-shadow:0 5px 18px rgba(0,0,0,.24);font-weight:850;font-size:12px;line-height:1.3;white-space:nowrap}}
 .route-pill .sub{{color:#80e8ff;font-weight:900}}
-.route-pill.late{{
-  background:rgba(198,40,56,.98)!important;
-  border:2px solid #ffb4bd!important;
-  color:#fff!important;
-  box-shadow:0 6px 20px rgba(198,40,56,.35)!important;
-}}
-.route-pill .timing-line{{
-  margin-top:4px;
-  font-size:12px;
-  font-weight:950;
-}}
-.route-pill .timing-ok{{color:#b7f7d0}}
-.route-pill.late .timing-line{{color:#fff}}
-
-100%{{transform:scale(1.035);box-shadow:0 0 0 8px rgba(255,49,70,0),0 8px 28px rgba(255,0,34,.52)}}
-}}
-
 .radar-marker{{width:34px;height:34px;border-radius:50%;background:#ff293d;border:3px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:950;box-shadow:0 4px 15px rgba(255,41,61,.45)}}
 .fuel-marker{{min-width:40px;height:38px;border-radius:13px;background:#0a8f63;border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:950;box-shadow:0 4px 15px rgba(10,143,99,.42);padding:0 5px}}
 .fuel-price{{font-size:10px;margin-left:3px;font-weight:950}}
@@ -1901,29 +1796,9 @@ map.on("load",()=>{{
 
   // Labels trajet
   DATA.labels.forEach(l=>{{
-    const el=document.createElement("div");
-    const status = l.timing_status || "ok";
-    const mins = Number.isFinite(Number(l.timing_min)) ? Number(l.timing_min) : 0;
-    const late = status === "retard";
-    el.className = "route-pill" + (late ? " late" : "");
-
-    let timingLine = "";
-    if(status === "retard") {{
-      timingLine = `<div class="timing-line">🔴 Retard ${{esc(mins)}} min</div>`;
-    }} else if(status === "avance") {{
-      timingLine = `<div class="timing-line timing-ok">🟢 Avance ${{esc(mins)}} min</div>`;
-    }} else {{
-      timingLine = `<div class="timing-line timing-ok">🟢 À l'heure</div>`;
-    }}
-
-    el.innerHTML =
-      esc(l.line1) +
-      `<br><span class="sub">${{esc(l.line2)}}</span>` +
-      timingLine;
-
-    new maplibregl.Marker({{element:el,anchor:"center"}})
-      .setLngLat(l.coords)
-      .addTo(map);
+    const el=document.createElement("div"); el.className="route-pill";
+    el.innerHTML=esc(l.line1)+`<br><span class="sub">${{esc(l.line2)}}</span>`;
+    new maplibregl.Marker({{element:el,anchor:"center"}}).setLngLat(l.coords).addTo(map);
   }});
 
   // Stops
@@ -1941,7 +1816,8 @@ map.on("load",()=>{{
       <div class="popup-route">🚗 ${{esc(p.duration)}} · ${{esc(p.distance)}} km · IK ${{esc(p.ik)}}${{toll}}<br>⏰ Départ ${{esc(p.depart)}}</div>
       <a class="pbtn primary" target="_blank" href="${{esc(p.waze)}}">🚗 Waze</a>
       <a class="pbtn" target="_blank" href="${{esc(p.groute)}}">🗺️ Trajet Google</a>
-      <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>${{phone}}`;
+      <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>
+      ${{p.terrain ? `<a class="pbtn" href="${{esc(p.terrain)}}" onclick="try{{window.top.location.href=p.terrain;}}catch(e){{}} return false;">🧠 Mode terrain</a>` : ""}}${{phone}}`;
       marker.setPopup(new maplibregl.Popup({{offset:28,maxWidth:"340px"}}).setHTML(html));
     }} else {{
       marker.setPopup(new maplibregl.Popup({{offset:22}}).setHTML(`<b>⌂ Base</b><br>${{esc(p.subtitle)}}`));
@@ -2837,7 +2713,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.5.5 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.4 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2926,52 +2802,6 @@ total_km = float(distance_series.sum()) + (to_float(return_row.get("distance_dep
 total_min = int(time_series.sum()) + (to_minutes(return_row.get("temps_route_depuis_precedent_min", 0)) if return_row else 0)
 total_tolls=float(pd.to_numeric(route_df.get("peage_estime",pd.Series(dtype=float)),errors="coerce").fillna(0).sum())+(to_float(return_row.get("peage_estime",0)) if return_row else 0.0)
 
-
-
-# ==========================================================
-# V28.5.5 — Mode terrain direct depuis la carte
-# ==========================================================
-terrain_direct_no = str(st.query_params.get("terrain", "") or "")
-if terrain_direct_no:
-    matches = route_df[route_df["numero_rdv"].astype(str) == terrain_direct_no]
-    if not matches.empty:
-        tr = matches.iloc[0]
-        st.markdown(
-            f"""
-            <div style="background:linear-gradient(145deg,#07101d,#0b2139);
-                        border:2px solid #00bfff;border-radius:20px;padding:16px;
-                        margin:8px 0 16px;box-shadow:0 14px 38px rgba(0,191,255,.18)">
-              <div style="font-size:.78rem;color:#80e8ff;font-weight:950;letter-spacing:.06em">MODE TERRAIN</div>
-              <div style="font-size:1.45rem;color:#fff;font-weight:950;margin-top:4px">
-                {fmt_time(tr.get('heure_rdv'))} · {tr.get('nom_prospect','')}
-              </div>
-              <div style="color:#cbd5e1;margin-top:5px">{tr.get('adresse_complete','')}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        tc1,tc2,tc3=st.columns(3)
-        tc1.link_button("🚗 Waze",tr.get("waze","#"),use_container_width=True)
-        tc2.link_button("🗺️ Google Maps",tr.get("google_maps","#"),use_container_width=True)
-        tc3.link_button("🏠 Voir maison",tr.get("street_view","#"),use_container_width=True)
-
-        st.markdown("#### 🧠 Préparation commerciale")
-        remark=str(tr.get("remarque_crm","") or "")
-        if remark:
-            st.info(remark)
-        ia_key=f"prepa_{tr.get('numero_rdv','')}"
-        ia_default=str(tr.get("analyse_ia_importee","") or build_preparation_advice(remark))
-        ia_text=st.text_area("Préparation IA",value=st.session_state.get(ia_key,ia_default),height=180,key=f"direct_{ia_key}")
-        st.session_state[ia_key]=ia_text
-
-        st.markdown("#### 📝 Rapport de rendez-vous")
-        d1,d2=st.columns(2)
-        with d1:
-            st.selectbox("Statut",["À faire","Signé","Négatif","Absent","À rappeler"],key=f"direct_status_{tr.get('numero_rdv','')}")
-        with d2:
-            st.date_input("Date de rappel",value=date.today(),key=f"direct_reminder_{tr.get('numero_rdv','')}")
-        st.text_area("Commentaire / compte-rendu",key=f"direct_comment_{tr.get('numero_rdv','')}",height=130)
-        st.divider()
 
 # ===== V27 : dashboard terrain premium =====
 tour_date = None
@@ -3120,6 +2950,12 @@ if next_rdv is not None:
                 rr_cmp = results_by_pref.get(pk)
                 if not rr_cmp:
                     continue
+
+                amount = rr_cmp.get("toll_amount")
+                if rr_cmp.get("toll_known") and amount is not None and float(amount) > 0:
+                    toll_txt = euro(amount)
+                elif rr_cmp.get("toll_detected"):
+                    toll_txt = "Tarif indisponible"
                 else:
                     # Google Routes ne fournit pas toujours les tarifs de péage
                     # selon les pays/itinéraires. On évite d'afficher 0 € comme un prix certain.
@@ -3129,6 +2965,7 @@ if next_rdv is not None:
                     "Itinéraire": ROUTE_PREF_LABELS[pk],
                     "Temps": fmt_duration(rr_cmp.get("min")),
                     "Distance": f"{float(rr_cmp.get('km',0)):.0f} km",
+                    "Péage": toll_txt,
                 })
 
             if rows:
@@ -3420,6 +3257,40 @@ for _, r in route_df.iterrows():
             st.success("Compte rendu enregistré.")
 
 
+# Navigation directe depuis la carte : une fois le bon expander rendu,
+# faire réellement défiler la page jusqu'au client (iPhone + Surface).
+if selected_terrain:
+    components.html(
+        f"""
+        <script>
+        (function() {{
+          const targetId = "terrain-{selected_terrain}";
+          let attempts = 0;
+          function scrollToTerrain() {{
+            attempts += 1;
+            try {{
+              const doc = window.parent.document;
+              const target = doc.getElementById(targetId);
+              if (target) {{
+                const top = target.getBoundingClientRect().top + window.parent.scrollY - 72;
+                window.parent.scrollTo({{top: top, behavior: "smooth"}});
+                return true;
+              }}
+            }} catch (e) {{}}
+            return false;
+          }}
+          const timer = setInterval(function() {{
+            if (scrollToTerrain() || attempts >= 25) {{
+              clearInterval(timer);
+            }}
+          }}, 160);
+        }})();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+
 with st.expander("📤 Documents & exports", expanded=False):
     include_photos = st.checkbox("Essayer d'intégrer les photos Street View dans le PDF", value=bool(google_key), help="Nécessite une clé Google Maps API. Sinon le PDF contient le lien Voir maison cliquable.")
     pdf_bytes = create_pdf(route_df, return_row, start_address, include_photos, google_key, int(visit_min))
@@ -3544,4 +3415,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.5.5 — 29/07/2026 · étiquettes trajets restaurées · avance/retard · fond rouge si retard · GPS · radars · stations-service")
+st.caption("Routage PRO · GDH — V28.4 — 28/07/2026 · Mode terrain iPhone/Surface corrigé · scroll automatique · Google TOLLS · GPS · radars · stations-service")
