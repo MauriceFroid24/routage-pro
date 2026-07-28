@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.5.4.1 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.5.5.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.5.4 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.5.5 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.5.4 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.5.5 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -1738,9 +1738,21 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                     rr,
                     int(rr.name) if isinstance(rr.name, int) else 0
                 )
-                if mid is not None:
+
+                # L'étiquette doit toujours utiliser un point valide du trajet.
+                # Si le milieu calculé échoue, repli sur le point central de la géométrie.
+                label_mid = mid
+                if label_mid is None and isinstance(coords, list) and len(coords) > 0:
+                    p = coords[len(coords)//2]
+                    try:
+                        # Géométrie Google stockée [lat, lon] -> MapLibre [lon, lat]
+                        label_mid = [float(p[1]), float(p[0])]
+                    except Exception:
+                        label_mid = None
+
+                if label_mid is not None:
                     route_labels.append({
-                        "coords":mid,
+                        "coords":label_mid,
                         "line1":label,
                         "line2":f"Départ {fmt_dt(rr.get('depart_conseille'))}",
                         "timing_status":timing_status,
@@ -1890,14 +1902,16 @@ map.on("load",()=>{{
   // Labels trajet
   DATA.labels.forEach(l=>{{
     const el=document.createElement("div");
-    const late = l.timing_status === "retard";
+    const status = l.timing_status || "ok";
+    const mins = Number.isFinite(Number(l.timing_min)) ? Number(l.timing_min) : 0;
+    const late = status === "retard";
     el.className = "route-pill" + (late ? " late" : "");
 
     let timingLine = "";
-    if(l.timing_status === "retard") {{
-      timingLine = `<div class="timing-line">🔴 Retard ${{esc(l.timing_min)}} min</div>`;
-    }} else if(l.timing_status === "avance") {{
-      timingLine = `<div class="timing-line timing-ok">🟢 Avance ${{esc(l.timing_min)}} min</div>`;
+    if(status === "retard") {{
+      timingLine = `<div class="timing-line">🔴 Retard ${{esc(mins)}} min</div>`;
+    }} else if(status === "avance") {{
+      timingLine = `<div class="timing-line timing-ok">🟢 Avance ${{esc(mins)}} min</div>`;
     }} else {{
       timingLine = `<div class="timing-line timing-ok">🟢 À l'heure</div>`;
     }}
@@ -2823,7 +2837,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.5.4 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.5.5 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2915,7 +2929,7 @@ total_tolls=float(pd.to_numeric(route_df.get("peage_estime",pd.Series(dtype=floa
 
 
 # ==========================================================
-# V28.5.4 — Mode terrain direct depuis la carte
+# V28.5.5 — Mode terrain direct depuis la carte
 # ==========================================================
 terrain_direct_no = str(st.query_params.get("terrain", "") or "")
 if terrain_direct_no:
@@ -3530,4 +3544,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.5.4 — 28/07/2026 · avance/retard sur chaque trajet · fond rouge si retard · GPS · radars · stations-service · trafic Google")
+st.caption("Routage PRO · GDH — V28.5.5 — 29/07/2026 · étiquettes trajets restaurées · avance/retard · fond rouge si retard · GPS · radars · stations-service")
