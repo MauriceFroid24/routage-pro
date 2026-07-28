@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.3 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.4 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.3 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.4 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.3 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.4 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -351,6 +351,7 @@ div[data-testid="stExpander"]{
     .live-pills{justify-content:flex-start;margin-top:10px}
 }
 
+.terrain-anchor{scroll-margin-top:82px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1816,7 +1817,7 @@ map.on("load",()=>{{
       <a class="pbtn primary" target="_blank" href="${{esc(p.waze)}}">🚗 Waze</a>
       <a class="pbtn" target="_blank" href="${{esc(p.groute)}}">🗺️ Trajet Google</a>
       <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>
-      ${{p.terrain ? `<a class="pbtn" target="_top" href="${{esc(p.terrain)}}">🧠 Mode terrain</a>` : ""}}${{phone}}`;
+      ${{p.terrain ? `<a class="pbtn" href="${{esc(p.terrain)}}" onclick="try{{window.top.location.href=p.terrain;}}catch(e){{}} return false;">🧠 Mode terrain</a>` : ""}}${{phone}}`;
       marker.setPopup(new maplibregl.Popup({{offset:28,maxWidth:"340px"}}).setHTML(html));
     }} else {{
       marker.setPopup(new maplibregl.Popup({{offset:22}}).setHTML(`<b>⌂ Base</b><br>${{esc(p.subtitle)}}`));
@@ -2712,7 +2713,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.3 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.4 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -3158,7 +3159,7 @@ st.subheader("📋 Mode terrain")
 selected_terrain = str(st.query_params.get("terrain", "") or "")
 for _, r in route_df.iterrows():
     terrain_no = str(r.get("numero_rdv", ""))
-    st.markdown(f'<div id="terrain-{terrain_no}"></div>', unsafe_allow_html=True)
+    st.markdown(f'<div id="terrain-{terrain_no}" class="terrain-anchor"></div>', unsafe_allow_html=True)
     pause = r.get('pause_avant_rdv_min', '')
     pause_txt = "" if pause == "" else (f" · Pause dispo : {fmt_duration(pause)}" if to_minutes(pause) >= 0 else f" · ⚠ Retard probable : {fmt_duration(abs(to_minutes(pause)))}")
     title = f"RDV {r.get('numero_rdv','')} · {fmt_time(r.get('heure_rdv'))} · {r.get('nom_prospect','')}{pause_txt}"
@@ -3254,6 +3255,41 @@ for _, r in route_df.iterrows():
         if st.button("💾 Enregistrer compte rendu", key=f"savecrm_{abs(hash(key))}"):
             save_crm_record(key, r, statut, commentaire, rappel_date, rappel_time, details_crm, analyse_ia)
             st.success("Compte rendu enregistré.")
+
+
+# Navigation directe depuis la carte : une fois le bon expander rendu,
+# faire réellement défiler la page jusqu'au client (iPhone + Surface).
+if selected_terrain:
+    components.html(
+        f"""
+        <script>
+        (function() {{
+          const targetId = "terrain-{selected_terrain}";
+          let attempts = 0;
+          function scrollToTerrain() {{
+            attempts += 1;
+            try {{
+              const doc = window.parent.document;
+              const target = doc.getElementById(targetId);
+              if (target) {{
+                const top = target.getBoundingClientRect().top + window.parent.scrollY - 72;
+                window.parent.scrollTo({{top: top, behavior: "smooth"}});
+                return true;
+              }}
+            }} catch (e) {{}}
+            return false;
+          }}
+          const timer = setInterval(function() {{
+            if (scrollToTerrain() || attempts >= 25) {{
+              clearInterval(timer);
+            }}
+          }}, 160);
+        }})();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
 
 with st.expander("📤 Documents & exports", expanded=False):
     include_photos = st.checkbox("Essayer d'intégrer les photos Street View dans le PDF", value=bool(google_key), help="Nécessite une clé Google Maps API. Sinon le PDF contient le lien Voir maison cliquable.")
@@ -3379,4 +3415,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.3 — 28/07/2026 · Cockpit épuré · IK sur carte · GPS · radars · stations-service · trafic Google")
+st.caption("Routage PRO · GDH — V28.4 — 28/07/2026 · Mode terrain iPhone/Surface corrigé · scroll automatique · Google TOLLS · GPS · radars · stations-service")
