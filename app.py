@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.5 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.5.1.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.5 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.5.1 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.5 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.5.1 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -1649,11 +1649,7 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 "duration":fmt_duration(rr.get("temps_route_depuis_precedent_min","")),
                 "depart":fmt_dt(rr.get("depart_conseille")),
                 "ik":euro(rr.get("ik_montant_trajet",0)),
-                "toll":(
-                    euro(rr.get("peage_estime",0))
-                    if bool(rr.get("peage_connu",False)) and float(rr.get("peage_estime",0) or 0) > 0
-                    else ("Tarif indisponible" if bool(rr.get("peage_detecte",False)) else "")
-                ),
+                "toll":"",
             },
             "geometry":{"type":"Point","coordinates":[lon,lat]},
         })
@@ -1669,6 +1665,7 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 })
                 mid = coords[len(coords)//2]
                 ik_txt = euro(rr.get("ik_montant_trajet", 0))
+                label = f"{fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km · IK {ik_txt}"
                 
                 delay_min = int(route_delay_status(rr, int(rr.name) if isinstance(rr.name, int) else 0))
                 route_labels.append({
@@ -1690,6 +1687,7 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 })
                 mid=coords[len(coords)//2]
                 ik_ret = euro(return_row.get("ik_montant_trajet", 0))
+                label = f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km · IK {ik_ret}"
                 
                 route_labels.append({"coords":mid,"line1":label,"line2":"Retour base","delay_min":0,"alert":False})
 
@@ -2739,7 +2737,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.5 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.5.1 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2831,7 +2829,7 @@ total_tolls=float(pd.to_numeric(route_df.get("peage_estime",pd.Series(dtype=floa
 
 
 # ==========================================================
-# V28.5 — Mode terrain direct depuis la carte
+# V28.5.1 — Mode terrain direct depuis la carte
 # ==========================================================
 terrain_direct_no = str(st.query_params.get("terrain", "") or "")
 if terrain_direct_no:
@@ -3446,4 +3444,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.5 — 28/07/2026 · alerte retard sur carte · Mode terrain direct · GPS · radars · stations-service · trafic Google")
+st.caption("Routage PRO · GDH — V28.5.1 — 28/07/2026 · alerte retard sur carte · Mode terrain direct · GPS · radars · stations-service · trafic Google")
