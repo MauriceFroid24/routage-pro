@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.2 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V28.3 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.2 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V28.3 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.2 — lisibilité des champs IA désactivés sur iPhone */
+/* V28.3 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -1577,7 +1577,8 @@ def _html_escape(s):
 
 
 def build_maplibre_html(df, return_row, start_address, start_geo, current_position=None,
-                        show_radars=True, show_fuel=False, fuel_type="gazole", style_name="Liberty"):
+                        show_radars=True, show_fuel=False, fuel_type="gazole", style_name="Liberty",
+                        app_url=""):
     """Carte vectorielle moderne OpenFreeMap/MapLibre."""
     import json
 
@@ -1622,12 +1623,17 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                 "waze":str(rr.get("waze","#")),
                 "groute":google_drive_to_link(rr.get("adresse_complete","")),
                 "house":str(rr.get("street_view","#")),
-                "terrain":f"?terrain={quote_plus(str(rr.get('numero_rdv','')))}#terrain-{quote_plus(str(rr.get('numero_rdv','')))}",
+                "terrain":f"{str(app_url).rstrip('/')}?terrain={quote_plus(str(rr.get('numero_rdv','')))}#terrain-{quote_plus(str(rr.get('numero_rdv','')))}" if app_url else "",
                 "phone":str(rr.get("telephone_tel","")),
                 "distance":str(rr.get("distance_depuis_precedent_km","")),
                 "duration":fmt_duration(rr.get("temps_route_depuis_precedent_min","")),
                 "depart":fmt_dt(rr.get("depart_conseille")),
-                "toll":euro(rr.get("peage_estime",0)) if float(rr.get("peage_estime",0) or 0)>0 else "",
+                "ik":euro(rr.get("ik_montant_trajet",0)),
+                "toll":(
+                    euro(rr.get("peage_estime",0))
+                    if bool(rr.get("peage_connu",False)) and float(rr.get("peage_estime",0) or 0) > 0
+                    else ("Tarif indisponible" if bool(rr.get("peage_detecte",False)) else "")
+                ),
             },
             "geometry":{"type":"Point","coordinates":[lon,lat]},
         })
@@ -1642,9 +1648,16 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                     "geometry":{"type":"LineString","coordinates":coords},
                 })
                 mid = coords[len(coords)//2]
-                toll = euro(rr.get("peage_estime",0)) if float(rr.get("peage_estime",0) or 0)>0 else ""
-                label = f"{fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km"
-                if toll: label += f" · {toll}"
+                ik_txt = euro(rr.get("ik_montant_trajet", 0))
+                if bool(rr.get("peage_connu", False)) and float(rr.get("peage_estime",0) or 0) > 0:
+                    toll_txt = euro(rr.get("peage_estime",0))
+                elif bool(rr.get("peage_detecte", False)):
+                    toll_txt = "péage : tarif N/D"
+                else:
+                    toll_txt = ""
+                label = f"{fmt_duration(rr.get('temps_route_depuis_precedent_min',''))} · {rr.get('distance_depuis_precedent_km','')} km · IK {ik_txt}"
+                if toll_txt:
+                    label += f" · {toll_txt}"
                 route_labels.append({
                     "coords":mid,
                     "line1":label,
@@ -1661,8 +1674,14 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                     "geometry":{"type":"LineString","coordinates":coords},
                 })
                 mid=coords[len(coords)//2]
-                toll=euro(return_row.get("peage_estime",0)) if float(return_row.get("peage_estime",0) or 0)>0 else ""
-                label=f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km"
+                ik_ret = euro(return_row.get("ik_montant_trajet", 0))
+                if bool(return_row.get("peage_connu", False)) and float(return_row.get("peage_estime",0) or 0) > 0:
+                    toll = euro(return_row.get("peage_estime",0))
+                elif bool(return_row.get("peage_detecte", False)):
+                    toll = "péage : tarif N/D"
+                else:
+                    toll = ""
+                label=f"Retour · {fmt_duration(return_row.get('temps_route_depuis_precedent_min',''))} · {return_row.get('distance_depuis_precedent_km','')} km · IK {ik_ret}"
                 if toll: label+=f" · {toll}"
                 route_labels.append({"coords":mid,"line1":label,"line2":"Retour base"})
 
@@ -1744,7 +1763,7 @@ html,body,#map{{margin:0;width:100%;height:100%;background:#070b14;font-family:-
 .stop-marker{{min-width:94px;background:#05070b;color:#fff;border:1px solid #222b39;border-radius:14px;padding:7px 9px;box-shadow:0 6px 20px rgba(0,0,0,.42);font-weight:900;text-align:center;line-height:1.1}}
 .stop-marker .rdv-head{{display:flex;align-items:center;justify-content:center;gap:6px}} .stop-marker .rdv-num{{width:23px;height:23px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:#00bfff;color:#03101a;font-size:12px;font-weight:950}} .stop-marker .t{{font-size:13px;color:#8beaff}} .stop-marker .n{{font-size:12px;margin-top:5px;max-width:155px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .base-marker{{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0b1220;border:3px solid #62f6b7;color:#fff;font-size:20px;box-shadow:0 4px 18px rgba(98,246,183,.35)}}
-.route-pill{{background:rgba(52,57,65,.96);color:#fff;border:1px solid #737b87;border-radius:12px;padding:6px 9px;box-shadow:0 5px 18px rgba(0,0,0,.28);font-weight:850;font-size:12px;line-height:1.25;white-space:nowrap}}
+.route-pill{{background:rgba(92,99,109,.97);color:#fff;border:1px solid #a7adb6;border-radius:12px;padding:7px 10px;box-shadow:0 5px 18px rgba(0,0,0,.24);font-weight:850;font-size:12px;line-height:1.3;white-space:nowrap}}
 .route-pill .sub{{color:#80e8ff;font-weight:900}}
 .radar-marker{{width:34px;height:34px;border-radius:50%;background:#ff293d;border:3px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:950;box-shadow:0 4px 15px rgba(255,41,61,.45)}}
 .fuel-marker{{min-width:40px;height:38px;border-radius:13px;background:#0a8f63;border:2px solid #fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:950;box-shadow:0 4px 15px rgba(10,143,99,.42);padding:0 5px}}
@@ -1793,11 +1812,11 @@ map.on("load",()=>{{
       const toll=p.toll?` · 🛣️ ${{esc(p.toll)}}`:"";
       const html=`<div class="popup-title"><span style="display:inline-flex;width:27px;height:27px;border-radius:50%;align-items:center;justify-content:center;background:#00bfff;color:#03101a;font-size:13px;margin-right:7px">${{esc(p.order)}}</span>${{esc(p.time)}}</div>
       <div class="popup-client">${{esc(p.client)}}</div><div class="popup-addr">${{esc(p.address)}}</div>
-      <div class="popup-route">🚗 ${{esc(p.duration)}} · ${{esc(p.distance)}} km${{toll}}<br>⏰ Départ ${{esc(p.depart)}}</div>
+      <div class="popup-route">🚗 ${{esc(p.duration)}} · ${{esc(p.distance)}} km · IK ${{esc(p.ik)}}${{toll}}<br>⏰ Départ ${{esc(p.depart)}}</div>
       <a class="pbtn primary" target="_blank" href="${{esc(p.waze)}}">🚗 Waze</a>
       <a class="pbtn" target="_blank" href="${{esc(p.groute)}}">🗺️ Trajet Google</a>
       <a class="pbtn house" target="_blank" href="${{esc(p.house)}}">🏠 Voir maison</a>
-      <a class="pbtn" target="_parent" href="${{esc(p.terrain)}}">🧠 Mode terrain</a>${{phone}}`;
+      ${{p.terrain ? `<a class="pbtn" target="_top" href="${{esc(p.terrain)}}">🧠 Mode terrain</a>` : ""}}${{phone}}`;
       marker.setPopup(new maplibregl.Popup({{offset:28,maxWidth:"340px"}}).setHTML(html));
     }} else {{
       marker.setPopup(new maplibregl.Popup({{offset:22}}).setHTML(`<b>⌂ Base</b><br>${{esc(p.subtitle)}}`));
@@ -2693,7 +2712,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.2 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V28.3 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2772,6 +2791,9 @@ route_df, return_ik_amount, current_ik_total, current_ik_formula = add_ik_amount
     mode=sidebar_ik_mode,
     manual_rate=sidebar_manual_rate,
 )
+if return_row is not None:
+    return_row["ik_montant_trajet"] = float(return_ik_amount or 0)
+
 
 distance_series = pd.to_numeric(route_df.get("distance_depuis_precedent_km"), errors="coerce").fillna(0)
 time_series = pd.to_numeric(route_df.get("temps_route_depuis_precedent_min"), errors="coerce").fillna(0)
@@ -2883,6 +2905,7 @@ try:
         show_fuel=show_fuel,
         fuel_type=fuel_type,
         style_name=map_style,
+        app_url=(st.context.url if hasattr(st, "context") else ""),
     )
     components.html(map_html, height=650, scrolling=False)
 except Exception as e:
@@ -2928,12 +2951,14 @@ if next_rdv is not None:
                     continue
 
                 amount = rr_cmp.get("toll_amount")
-                if rr_cmp.get("toll_known") and amount is not None:
+                if rr_cmp.get("toll_known") and amount is not None and float(amount) > 0:
                     toll_txt = euro(amount)
                 elif rr_cmp.get("toll_detected"):
-                    toll_txt = "Péage · tarif indisponible"
+                    toll_txt = "Tarif indisponible"
                 else:
-                    toll_txt = "Aucun péage détecté"
+                    # Google Routes ne fournit pas toujours les tarifs de péage
+                    # selon les pays/itinéraires. On évite d'afficher 0 € comme un prix certain.
+                    toll_txt = "Non fourni par Google"
 
                 rows.append({
                     "Itinéraire": ROUTE_PREF_LABELS[pk],
@@ -3354,4 +3379,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.2 — 28/07/2026 · Cockpit épuré · GPS · radars sur trajet · stations-service · trafic Google")
+st.caption("Routage PRO · GDH — V28.3 — 28/07/2026 · Cockpit épuré · IK sur carte · GPS · radars · stations-service · trafic Google")
