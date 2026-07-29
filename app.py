@@ -33,7 +33,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-st.set_page_config(page_title="Routage PRO V28.4.1.1 — 28/07/2026", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Routage PRO V29.0.0.1 — 28/07/2026", page_icon="🚗", layout="wide")
 
 DEFAULT_START = "72 avenue des Tourelles, 94490 Ormesson-sur-Marne"
 AVG_SPEED_KMH = 38
@@ -118,7 +118,7 @@ def latest_local_crm_export():
         return None
     return max(candidates, key=lambda x: x.stat().st_mtime)
 
-st.title("🚗 Routage PRO · GDH — V28.4.1 — 28/07/2026")
+st.title("🚗 Routage PRO · GDH — V29.0.0 — 28/07/2026")
 st.caption("Copilote terrain · trafic Google · Waze · Voir maison · CRM · rappels · IK")
 
 st.markdown("""
@@ -262,7 +262,7 @@ header[data-testid="stHeader"] + div {
     to { filter: brightness(1.28); transform: scale(1.01); }
 }
 
-/* V28.4.1 — lisibilité des champs IA désactivés sur iPhone */
+/* V29.0.0 — lisibilité des champs IA désactivés sur iPhone */
 textarea:disabled {
     -webkit-text-fill-color: #111827 !important;
     color: #111827 !important;
@@ -1545,48 +1545,121 @@ def load_fuel_stations():
         return pd.DataFrame(columns=cols)
 
 
-def stations_near_route(df, return_row=None, current_position=None, margin_deg=0.11):
-    pts = []
+def stations_near_route(df, return_row=None, current_position=None, max_distance_km=5.0):
+    """Retourne uniquement les stations situées à max 5 km du tracé réel de la tournée.
+
+    Le filtrage se fait par rapport aux polylines routières Google/OSRM,
+    et non plus à un grand rectangle autour de la tournée.
+    """
+    import math as _math
+
+    route_pts = []
+
+    def add_geometry(geom):
+        if not isinstance(geom, list) or not geom:
+            return
+
+        # On conserve suffisamment de points pour suivre précisément la route,
+        # sans surcharger l'iPhone.
+        step = max(1, len(geom) // 700)
+
+        for p in geom[::step]:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                try:
+                    # route_geometry est stockée [latitude, longitude]
+                    route_pts.append((float(p[0]), float(p[1])))
+                except Exception:
+                    pass
+
+        # Toujours conserver le dernier point du tronçon.
+        try:
+            last = geom[-1]
+            route_pts.append((float(last[0]), float(last[1])))
+        except Exception:
+            pass
+
+    # Tous les trajets commerciaux.
     for _, rr in df.iterrows():
-        try:
-            pts.append((float(rr.get("lat")), float(rr.get("lon"))))
-        except Exception:
-            pass
-        geom = rr.get("route_geometry", [])
-        if isinstance(geom, list) and geom:
-            step = max(1, len(geom)//25)
-            for p in geom[::step]:
-                try:
-                    pts.append((float(p[0]), float(p[1])))
-                except Exception:
-                    pass
+        add_geometry(rr.get("route_geometry", []))
+
+    # Retour à la base inclus.
     if return_row:
-        geom = return_row.get("route_geometry", [])
-        if isinstance(geom, list) and geom:
-            step = max(1, len(geom)//25)
-            for p in geom[::step]:
-                try:
-                    pts.append((float(p[0]), float(p[1])))
-                except Exception:
-                    pass
-    if isinstance(current_position, dict):
-        try:
-            pts.append((float(current_position["latitude"]), float(current_position["longitude"])))
-        except Exception:
-            pass
-    if not pts:
+        add_geometry(return_row.get("route_geometry", []))
+
+    if not route_pts:
         return pd.DataFrame()
 
     all_stations = load_fuel_stations()
     if all_stations.empty:
         return all_stations
 
-    lats = [p[0] for p in pts]
-    lons = [p[1] for p in pts]
-    return all_stations[
-        all_stations["lat"].between(min(lats)-margin_deg, max(lats)+margin_deg)
-        & all_stations["lon"].between(min(lons)-margin_deg, max(lons)+margin_deg)
-    ].head(300).reset_index(drop=True)
+    # Premier filtre géographique rapide pour ne pas tester toute la France.
+    lats = [p[0] for p in route_pts]
+    lons = [p[1] for p in route_pts]
+
+    # 5 km ≈ 0,045° de latitude. On prend un peu de marge pour la longitude.
+    bbox_margin = 0.065
+
+    candidates = all_stations[
+        all_stations["lat"].between(min(lats) - bbox_margin, max(lats) + bbox_margin)
+        & all_stations["lon"].between(min(lons) - bbox_margin, max(lons) + bbox_margin)
+    ].copy()
+
+    if candidates.empty:
+        return candidates
+
+    # Distance station -> point de route le plus proche.
+    # Approximation locale suffisamment précise à cette échelle.
+    mean_lat = sum(lats) / len(lats)
+    lon_km = 111.0 * _math.cos(_math.radians(mean_lat))
+    max_d2 = float(max_distance_km) ** 2
+
+    keep_indices = []
+    nearest_distances = {}
+
+    for idx, station in candidates.iterrows():
+        try:
+            slat = float(station["lat"])
+            slon = float(station["lon"])
+        except Exception:
+            continue
+
+        best_d2 = None
+
+        for plat, plon in route_pts:
+            dy = (slat - plat) * 111.0
+            dx = (slon - plon) * lon_km
+            d2 = dx * dx + dy * dy
+
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+
+                # Dès qu'on est quasiment sur la route, inutile de continuer.
+                if best_d2 <= 0.01:
+                    break
+
+        if best_d2 is not None and best_d2 <= max_d2:
+            keep_indices.append(idx)
+            nearest_distances[idx] = _math.sqrt(best_d2)
+
+    result = candidates.loc[keep_indices].copy()
+
+    if result.empty:
+        return result
+
+    # Utile pour l'affichage / diagnostic et pour trier les stations
+    # les plus proches du trajet en premier.
+    result["distance_trajet_km"] = result.index.map(
+        lambda idx: round(nearest_distances.get(idx, 999.0), 1)
+    )
+
+    result = result.sort_values(
+        ["distance_trajet_km", "ville"],
+        na_position="last"
+    )
+
+    # Garde-fou pour la fluidité mobile.
+    return result.head(120).reset_index(drop=True)
 
 
 def _html_escape(s):
@@ -1762,6 +1835,7 @@ def build_maplibre_html(df, return_row, start_address, start_geo, current_positi
                     "cp":str(stn.get("cp","") or ""),
                     "price":price,
                     "updated":str(stn.get("updated","") or ""),
+                    "route_distance":None if pd.isna(stn.get("distance_trajet_km")) else float(stn.get("distance_trajet_km")),
                     "gazole":fv("gazole"),"sp95":fv("sp95"),"e10":fv("e10"),
                     "sp98":fv("sp98"),"e85":fv("e85"),"gplc":fv("gplc"),
                 },
@@ -1905,6 +1979,8 @@ map.on("load",()=>{{
     let details=`<div class="popup-title">⛽ ${{title}}</div>`;
     const addr=[p.adresse,p.cp,p.ville].filter(Boolean).join(" ");
     if(addr) details+=`<div class="popup-addr">${{esc(addr)}}</div>`;
+    if(p.route_distance!==null && p.route_distance!==undefined)
+      details+=`<div class="popup-route">📍 À ${{Number(p.route_distance).toFixed(1)}} km du trajet</div>`;
     const fuels=[["Gazole",p.gazole],["SP95",p.sp95],["E10",p.e10],["SP98",p.sp98],["E85",p.e85],["GPLc",p.gplc]].filter(x=>x[1]!==null&&x[1]!==undefined);
     if(fuels.length) details+=`<div class="popup-route">${{fuels.map(x=>`${{x[0]}} : <b>${{Number(x[1]).toFixed(3)}} €/L</b>`).join("<br>")}}</div>`;
     if(p.updated) details+=`<div style="font-size:10px;color:#94a3b8">Mise à jour : ${{esc(p.updated)}}</div>`;
@@ -2769,7 +2845,7 @@ with st.sidebar:
         "sidebar_electric": bool(sidebar_electric), "sidebar_return_ik": bool(sidebar_include_return),
         "ik_mode": sidebar_ik_mode, "manual_rate": float(sidebar_manual_rate),
     })
-    st.info("V28.4.1 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
+    st.info("V29.0.0 — 28/07/2026 : Google Routes API avec trafic réel/prédictif + import CRM enrichi + rappels + IA.")
 
 source_file = None
 source_label = ""
@@ -2934,7 +3010,7 @@ with mc1:
 with mc2:
     show_radars = st.toggle("📷 Radars fixes", value=True, key="show_radars_v28")
 with mc3:
-    show_fuel = st.toggle("⛽ Stations-service", value=False, key="show_fuel_v28")
+    show_fuel = st.toggle("⛽ Stations-service ≤ 5 km", value=False, key="show_fuel_v29")
 
 fuel_type = "gazole"
 if show_fuel:
@@ -2950,7 +3026,7 @@ layer_status=[]
 if show_radars:
     layer_status.append(f"📷 {len(radars_near_route(route_df, return_row, current_position))} radar(s)")
 if show_fuel:
-    layer_status.append(f"⛽ {len(stations_near_route(route_df, return_row, current_position))} station(s)")
+    layer_status.append(f"⛽ {len(stations_near_route(route_df, return_row, current_position, 5.0))} station(s) à ≤ 5 km")
 if layer_status:
     st.caption(" · ".join(layer_status))
 
@@ -3471,4 +3547,4 @@ with st.expander("💰 Indemnités kilométriques", expanded=False):
 
 
 
-st.caption("Routage PRO · GDH — V28.4.1 — 29/07/2026 · base stable V28.4 · avance/retard intégré aux étiquettes trajet")
+st.caption("Routage PRO · GDH — V29.0.0 — 29/07/2026 · stations-service à max 5 km du trajet · avance/retard · GPS · radars · trafic Google")
